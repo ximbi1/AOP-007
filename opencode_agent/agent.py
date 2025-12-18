@@ -89,12 +89,16 @@ class IterativeAgent:
         self.current_objective: str = ""
         self.event_sink = event_sink or _NoOpEvents()
         self.objective_type: str = "UNKNOWN"
+        self.objective_scope_here: bool = False
+        self.no_execute_requested: bool = False
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
         self._emit("phase_changed", "Analizando…")
         self.current_objective = objective
         self.objective_type = self._infer_objective_type(objective)
+        self.objective_scope_here = self._mentions_here(objective)
+        self.no_execute_requested = self._mentions_no_execute(objective)
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
         self.state.add_decision(f"Objetivo: {objective}")
@@ -190,6 +194,14 @@ class IterativeAgent:
             "Sigue el ciclo: presenta la siguiente acción concreta. "
             "Responde JSON con la clave action. Prioriza comandos pequeños y lecturas antes de escribir."
         )
+        if self.objective_type == "INSPECT" and attempt_no == 1:
+            target = self._single_relevant_file()
+            if target:
+                return Action(
+                    kind="read",
+                    description=f"Leer {target.name}",
+                    path=str(target.relative_to(self.root)),
+                )
         messages = self.messages + [
             {
                 "role": "user",
@@ -296,6 +308,27 @@ class IterativeAgent:
                     evaluation=str(exc),
                     status="FAILURE",
                 )
+        if action.kind == "read" and action.path:
+            target = Path(self.root, action.path)
+            try:
+                content = tools.read_file(str(target), start=1, lines=400)
+                snippet = content.strip().splitlines()[0] if content.strip().splitlines() else ""
+                desc = f"Read {action.path}; first line: {snippet[:160]}" if snippet else f"Read {action.path}; content inspected"
+                evidence = [f"READ_ACTION: read {action.path}", f"SUMMARY: {desc}"]
+                note = "Leído sin ejecución"
+                return Attempt(
+                    action=f"read {action.path}",
+                    evaluation=f"{note}. {desc}",
+                    status="SUCCESS",
+                    stdout=content,
+                    evidence=evidence,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return Attempt(
+                    action=f"read {action.path}",
+                    evaluation=str(exc),
+                    status="FAILURE",
+                )
         return Attempt(
             action=action.description or action.kind,
             evaluation="sin acción ejecutada",
@@ -320,6 +353,9 @@ class IterativeAgent:
         evaluation = "; ".join(signals) if signals else "ejecución exitosa"
         if "test" in " ".join(command).lower() and returncode == 0:
             evidence.append("Tests pasaron")
+        read_commands = {"cat", "type", "more", "less", "sed", "awk"}
+        if command and (command[0] in read_commands or "cat " in " ".join(command)):
+            evidence.append("READ_ACTION: comando de lectura ejecutado")
         if stdout:
             evidence.append(f"stdout observado ({min(len(stdout),80)} chars)")
         if stderr:
@@ -330,8 +366,15 @@ class IterativeAgent:
     def _evaluate_goal(self, objective: str, attempt: Attempt) -> Evaluation:
         evidence = list(attempt.evidence)
         status = attempt.status
-        # CREATE_ARTIFACT handling: success if a file was written/created and no failure observed
-        if self.objective_type == "CREATE_ARTIFACT" and status != "FAILURE":
+        if self.objective_type == "INSPECT":
+            read_evidence = any("READ_ACTION" in ev or "stdout observado" in ev for ev in evidence)
+            if read_evidence:
+                status = "SUCCESS"
+                evidence.append("Contenido inspeccionado para el objetivo de lectura")
+            else:
+                status = "PARTIAL" if status != "FAILURE" else status
+                evidence.append("No se ha leído ningún archivo relevante")
+        elif self.objective_type == "CREATE_ARTIFACT" and status != "FAILURE":
             artifact_signal = False
             if self.state.files_created:
                 artifact_signal = True
@@ -346,7 +389,7 @@ class IterativeAgent:
             if "test" in attempt.action.lower():
                 status = "SUCCESS"
                 evidence.append("Tests relacionados con el objetivo pasaron")
-            else:
+            elif self.objective_type not in {"CREATE_ARTIFACT", "INSPECT"}:
                 status = "PARTIAL"
         if attempt.status == "PARTIAL" and self.state.files_created:
             evidence.append(f"Archivos creados: {', '.join(self.state.files_created[-3:])}")
@@ -358,6 +401,9 @@ class IterativeAgent:
             + ("; ".join(evidence) if evidence else "sin evidencia sólida")
             + f". Conclusión frente al objetivo '{objective}': {status}."
         )
+        if self.objective_type == "INSPECT" and status == "SUCCESS":
+            note = "He leído el archivo sin ejecutarlo." if self.no_execute_requested else "He leído el archivo para describirlo."
+            rationale = rationale + f" {note}"
         return Evaluation(status=status, evidence=evidence, rationale=rationale)
 
     def _choose_strategy(
@@ -392,6 +438,22 @@ class IterativeAgent:
 
     def _infer_objective_type(self, objective: str) -> str:
         text = objective.lower()
+        inspect_keywords = [
+            "que hace",
+            "¿que hace",
+            "de que trata",
+            "explícame",
+            "explicame",
+            "describe",
+            "analiza",
+            "inspecciona",
+            "read",
+            "explain",
+            "what does",
+            "inspect",
+        ]
+        if any(k in text for k in inspect_keywords):
+            return "INSPECT"
         create_keywords = [
             "crear",
             "crea",
@@ -419,6 +481,31 @@ class IterativeAgent:
         if any(k in text for k in inspect_keywords):
             return "INSPECT"
         return "UNKNOWN"
+
+    def _mentions_no_execute(self, objective: str) -> bool:
+        text = objective.lower()
+        terms = ["no lo ejecutes", "sin ejecutar", "solo lee", "no ejecutar", "do not run", "just read"]
+        return any(t in text for t in terms)
+
+    def _mentions_here(self, objective: str) -> bool:
+        text = objective.lower()
+        here_terms = ["esta carpeta", "aquí", "aqui", "carpeta actual", "esta ruta", "here", "this folder", "current folder"]
+        return any(term in text for term in here_terms)
+
+    def _single_relevant_file(self) -> Optional[Path]:
+        ignored_dirs = {".git", "__pycache__", ".opencode", ".venv", "venv", "node_modules"}
+        candidates: List[Path] = []
+        for item in self.root.iterdir():
+            if item.is_dir():
+                if item.name in ignored_dirs:
+                    continue
+                continue
+            if item.suffix in {".pyc", ".pyo", ".so", ".dylib", ".dll"}:
+                continue
+            candidates.append(item)
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
 
 
 class _NoOpEvents:
