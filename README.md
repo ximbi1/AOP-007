@@ -8,7 +8,7 @@ This repository contains a terminal-first assistant designed to operate inside a
 - Iterative agent mode: objetivo → plan → acción → evaluación → corrección with explicit attempts and state tracking.
 - Ligera memoria persistente: `ProjectState` guarda lenguajes, frameworks, archivos clave y decisiones en `.opencode/state.json` (carga automática si existe).
 - Built-in tools: list files, read file segments, regex search, safe writes with diffs, and guarded command execution.
-- Workspace analysis to detect languages, frameworks, and missing project scaffolding.
+- Workspace analysis with strict filtering (.git, __pycache__, node_modules, artefactos compilados) and framework detection only with clear structural evidence; weak signals become “low confidence” hints.
 - Plan-before-action workflow: propose steps, request confirmation, and execute sequentially.
 - Git helpers: initialize repositories, show status/diffs, create automatic commits, and revert.
 
@@ -67,6 +67,7 @@ This is an initial prototype focused on safety and clarity. Extend the command s
 - Componente `ProjectUnderstanding` genera pistas opcionales usando heurísticas simples: nombres comunes (`main.*`, `app.*`, `index.*`, `server.*`, `cli.*`), configs conocidas (`package.json`, `pyproject.toml`, etc.), carpetas típicas (`src/`, `app/`, `tests/`) y referencias por imports (regex, sin AST).
 - Cada pista incluye nivel de confianza (alta/media/baja) y una razón explicable; nunca se asume como verdad absoluta.
 - El agente usa estas pistas solo para justificar por qué prioriza un archivo o solicita confirmación; puede decir “no tengo suficiente certeza” y pedir guía humana.
+- El análisis añade centralidad heurística (archivos más importados) y explica por qué una señal pesa más (señales estructurales superan a contextuales); si no hay evidencia suficiente, lo indica explícitamente.
 
 ## Evaluación por objetivos
 
