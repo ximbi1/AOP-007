@@ -88,11 +88,13 @@ class IterativeAgent:
         self.messages: List[Dict[str, object]] = []
         self.current_objective: str = ""
         self.event_sink = event_sink or _NoOpEvents()
+        self.objective_type: str = "UNKNOWN"
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
         self._emit("phase_changed", "Analizando…")
         self.current_objective = objective
+        self.objective_type = self._infer_objective_type(objective)
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
         self.state.add_decision(f"Objetivo: {objective}")
@@ -327,8 +329,19 @@ class IterativeAgent:
 
     def _evaluate_goal(self, objective: str, attempt: Attempt) -> Evaluation:
         evidence = list(attempt.evidence)
-        obj_lower = objective.lower()
         status = attempt.status
+        # CREATE_ARTIFACT handling: success if a file was written/created and no failure observed
+        if self.objective_type == "CREATE_ARTIFACT" and status != "FAILURE":
+            artifact_signal = False
+            if self.state.files_created:
+                artifact_signal = True
+                evidence.append(f"Archivos creados: {', '.join(self.state.files_created[-3:])}")
+            if attempt.action.startswith("write"):
+                artifact_signal = True
+                evidence.append("Acción de escritura realizada")
+            if artifact_signal:
+                status = "SUCCESS"
+                evidence.append("Objetivo de creación cumplido (artefacto generado)")
         if attempt.status == "SUCCESS":
             if "test" in attempt.action.lower():
                 status = "SUCCESS"
@@ -376,6 +389,36 @@ class IterativeAgent:
                 self.event_sink.emit(event, message)
         except Exception:
             pass
+
+    def _infer_objective_type(self, objective: str) -> str:
+        text = objective.lower()
+        create_keywords = [
+            "crear",
+            "crea",
+            "genera",
+            "generar",
+            "escribe",
+            "escribir",
+            "script",
+            "archivo",
+            "fichero",
+            "file",
+            "generate",
+            "write",
+            "add file",
+        ]
+        if any(k in text for k in create_keywords):
+            return "CREATE_ARTIFACT"
+        exec_keywords = ["ejecuta", "run", "ejecutar", "execute"]
+        if any(k in text for k in exec_keywords):
+            return "EXECUTE"
+        modify_keywords = ["modifica", "modificar", "refactor", "ajusta", "update", "cambia"]
+        if any(k in text for k in modify_keywords):
+            return "MODIFY"
+        inspect_keywords = ["lee", "list", "inspecciona", "analiza", "consulta"]
+        if any(k in text for k in inspect_keywords):
+            return "INSPECT"
+        return "UNKNOWN"
 
 
 class _NoOpEvents:
