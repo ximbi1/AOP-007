@@ -454,22 +454,7 @@ class IterativeAgent:
 
     def _infer_objective_type(self, objective: str) -> str:
         text = objective.lower()
-        inspect_keywords = [
-            "que hace",
-            "¿que hace",
-            "de que trata",
-            "explícame",
-            "explicame",
-            "describe",
-            "analiza",
-            "inspecciona",
-            "read",
-            "explain",
-            "what does",
-            "inspect",
-        ]
-        if any(k in text for k in inspect_keywords):
-            return "INSPECT"
+        file_tokens = [".md", ".py", ".txt", "readme", "documentacion", "documentación", "doc"]
         create_keywords = [
             "crear",
             "crea",
@@ -485,15 +470,35 @@ class IterativeAgent:
             "write",
             "add file",
         ]
+        modify_keywords = ["modifica", "modificar", "refactor", "ajusta", "update", "cambia"]
+        if any(k in text for k in modify_keywords) and any(tok in text for tok in file_tokens):
+            return "MODIFY"
+        if any(k in text for k in create_keywords) and any(tok in text for tok in file_tokens):
+            return "CREATE_ARTIFACT"
         if any(k in text for k in create_keywords):
             return "CREATE_ARTIFACT"
         exec_keywords = ["ejecuta", "run", "ejecutar", "execute"]
         if any(k in text for k in exec_keywords):
             return "EXECUTE"
-        modify_keywords = ["modifica", "modificar", "refactor", "ajusta", "update", "cambia"]
         if any(k in text for k in modify_keywords):
             return "MODIFY"
-        inspect_keywords = ["lee", "list", "inspecciona", "analiza", "consulta"]
+        inspect_keywords = [
+            "que hace",
+            "¿que hace",
+            "de que trata",
+            "explícame",
+            "explicame",
+            "describe",
+            "analiza",
+            "inspecciona",
+            "read",
+            "explain",
+            "what does",
+            "inspect",
+            "lee",
+            "list",
+            "consulta",
+        ]
         if any(k in text for k in inspect_keywords):
             return "INSPECT"
         return "UNKNOWN"
