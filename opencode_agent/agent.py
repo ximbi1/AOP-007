@@ -91,14 +91,18 @@ class IterativeAgent:
         self.objective_type: str = "UNKNOWN"
         self.objective_scope_here: bool = False
         self.no_execute_requested: bool = False
+        self.sub_objectives: List[str] = []
+        self.current_sub_index: int = 0
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
         self._emit("phase_changed", "Analizando…")
-        self.current_objective = objective
-        self.objective_type = self._infer_objective_type(objective)
-        self.objective_scope_here = self._mentions_here(objective)
-        self.no_execute_requested = self._mentions_no_execute(objective)
+        self.sub_objectives = self._parse_sub_objectives(objective)
+        self.current_sub_index = 0
+        self.current_objective = self.sub_objectives[0]
+        self.objective_type = self._infer_objective_type(self.current_objective)
+        self.objective_scope_here = self._mentions_here(self.current_objective)
+        self.no_execute_requested = self._mentions_no_execute(self.current_objective)
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
         self.state.add_decision(f"Objetivo: {objective}")
@@ -117,7 +121,10 @@ class IterativeAgent:
             for attempt_no in range(1, max_attempts + 1):
                 self._emit("phase_changed", "Ejecutando…")
                 action = self._request_action(attempt_no)
-                self._emit("intention_set", f"Intento {attempt_no}: {action.description or action.kind}")
+                self._emit(
+                    "intention_set",
+                    f"Intento {attempt_no} (subobjetivo {self.current_sub_index + 1}/{len(self.sub_objectives)}): {action.description or action.kind}",
+                )
                 result = self._execute_action(action)
                 self._emit("phase_changed", "Evaluando…")
                 evaluation = self._evaluate_goal(objective, result)
@@ -127,9 +134,11 @@ class IterativeAgent:
                 self.state.add_decision(f"Intento {attempt_no}: {result.evaluation}")
                 self.state.save()
                 if evaluation.status == "SUCCESS":
-                    self.state.add_decision(
-                        "No haré nada porque el objetivo ya está cumplido"
-                    )
+                    if self._has_next_subobjective():
+                        self.state.add_decision("Subobjetivo cumplido; avanzando al siguiente")
+                        self._advance_subobjective()
+                        continue
+                    self.state.add_decision("No haré nada porque el objetivo ya está cumplido")
                     self._emit("success_detected", "Evidencia suficiente de cumplimiento del objetivo")
                     break
                 if attempt_no >= max_attempts:
@@ -486,6 +495,31 @@ class IterativeAgent:
         text = objective.lower()
         terms = ["no lo ejecutes", "sin ejecutar", "solo lee", "no ejecutar", "do not run", "just read"]
         return any(t in text for t in terms)
+
+    def _parse_sub_objectives(self, objective: str) -> List[str]:
+        text = objective.replace(";", " y ")
+        connectors = [" y ", " and ", " además ", " tambien ", " también ", " y luego ", " y después ", " y despues "]
+        parts: List[str] = [objective]
+        for conn in connectors:
+            if conn in text.lower():
+                raw_parts = [p.strip() for p in text.split(conn) if p.strip()]
+                if len(raw_parts) > 1:
+                    parts = raw_parts
+                    break
+        return parts or [objective]
+
+    def _has_next_subobjective(self) -> bool:
+        return self.current_sub_index + 1 < len(self.sub_objectives)
+
+    def _advance_subobjective(self) -> None:
+        if not self._has_next_subobjective():
+            return
+        self.current_sub_index += 1
+        self.current_objective = self.sub_objectives[self.current_sub_index]
+        self.objective_type = self._infer_objective_type(self.current_objective)
+        self.objective_scope_here = self._mentions_here(self.current_objective)
+        self.no_execute_requested = self._mentions_no_execute(self.current_objective)
+        self._emit("intention_set", f"Nuevo subobjetivo: {self.current_objective}")
 
     def _mentions_here(self, objective: str) -> bool:
         text = objective.lower()
