@@ -114,52 +114,59 @@ class IterativeAgent:
         self.semantic_summary = understanding.to_summary()
 
         with self.backend:
-            self._bootstrap_messages(objective)
-            self._emit("phase_changed", "Planificando…")
-            self.state.plan = self._request_plan()
-            self.state.save()
-            for attempt_no in range(1, max_attempts + 1):
-                self._emit("phase_changed", "Ejecutando…")
-                action = self._request_action(attempt_no)
-                self._emit(
-                    "intention_set",
-                    f"Intento {attempt_no} (subobjetivo {self.current_sub_index + 1}/{len(self.sub_objectives)}): {action.description or action.kind}",
-                )
-                result = self._execute_action(action)
-                self._emit("phase_changed", "Evaluando…")
-                evaluation = self._evaluate_goal(objective, result)
-                result.status = evaluation.status
-                result.evidence.extend(evaluation.evidence)
-                self.state.evaluation = evaluation
-                self.state.add_decision(f"Intento {attempt_no}: {result.evaluation}")
+            while True:
+                self._bootstrap_messages(self.current_objective)
+                self._emit("phase_changed", "Planificando…")
+                self.state.plan = self._request_plan()
                 self.state.save()
-                if evaluation.status == "SUCCESS":
-                    if self._has_next_subobjective():
-                        self.state.add_decision("Subobjetivo cumplido; avanzando al siguiente")
-                        self._advance_subobjective()
-                        continue
-                    self.state.add_decision("No haré nada porque el objetivo ya está cumplido")
-                    self._emit("success_detected", "Evidencia suficiente de cumplimiento del objetivo")
-                    break
-                if attempt_no >= max_attempts:
-                    self.state.add_decision(
-                        "He intentado varias veces y recomiendo parar"
+                sub_success = False
+                for attempt_no in range(1, max_attempts + 1):
+                    self._emit("phase_changed", "Ejecutando…")
+                    action = self._request_action(attempt_no)
+                    self._emit(
+                        "intention_set",
+                        f"Intento {attempt_no} (subobjetivo {self.current_sub_index + 1}/{len(self.sub_objectives)} - {self.objective_type}): {action.description or action.kind}",
                     )
-                    self._emit("stopping_recommended", "Límite de intentos alcanzado")
+                    result = self._execute_action(action)
+                    self._emit("phase_changed", "Evaluando…")
+                    evaluation = self._evaluate_goal(self.current_objective, result)
+                    result.status = evaluation.status
+                    result.evidence.extend(evaluation.evidence)
+                    self.state.evaluation = evaluation
+                    self.state.add_decision(f"Intento {attempt_no}: {result.evaluation}")
+                    self.state.save()
+                    if evaluation.status == "SUCCESS":
+                        sub_success = True
+                        break
+                    if attempt_no >= max_attempts:
+                        self.state.add_decision(
+                            "He intentado varias veces y recomiendo parar"
+                        )
+                        self._emit("stopping_recommended", "Límite de intentos alcanzado")
+                        break
+                    strategy, justification, discarded = self._choose_strategy(
+                        evaluation, attempt_no, max_attempts
+                    )
+                    self.state.add_decision(
+                        f"Estrategia: {strategy} (descarto: {', '.join(discarded)}) porque {justification}"
+                    )
+                    self._emit("strategy_changed", f"{strategy} :: {justification}")
+                    if strategy in {"ask_user", "stop"}:
+                        break
+                    correction = self._request_correction(result, strategy, discarded)
+                    result.correction = correction or "sin corrección"
+                    if self.state.evaluation.status == "SUCCESS":
+                        sub_success = True
+                        break
+                if not sub_success:
                     break
-                strategy, justification, discarded = self._choose_strategy(
-                    evaluation, attempt_no, max_attempts
-                )
-                self.state.add_decision(
-                    f"Estrategia: {strategy} (descarto: {', '.join(discarded)}) porque {justification}"
-                )
-                self._emit("strategy_changed", f"{strategy} :: {justification}")
-                if strategy in {"ask_user", "stop"}:
-                    break
-                correction = self._request_correction(result, strategy, discarded)
-                result.correction = correction or "sin corrección"
-                if self.state.evaluation.status == "SUCCESS":
-                    break
+                if self._has_next_subobjective():
+                    self.state.add_decision("Subobjetivo cumplido; avanzando al siguiente")
+                    self._advance_subobjective()
+                    continue
+                self.state.add_decision("No haré nada porque el objetivo ya está cumplido")
+                self._emit("success_detected", "Evidencia suficiente de cumplimiento del objetivo")
+                break
         return self.state
 
     # ------------------------------------------------------------------
