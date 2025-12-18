@@ -56,6 +56,11 @@ This is an initial prototype focused on safety and clarity. Extend the command s
 - The launcher sets `LD_LIBRARY_PATH` to `/opt/intel/oneapi/mkl/2025.3/lib/intel64` for the server process.
 - Logs live at `~/.cache/opencode/llama_server.log`.
 
+## Interacción y eventos en tiempo real
+
+- Durante el modo agente, se muestran eventos breves en consola (sin razonamiento interno): cambios de fase ([fase]), intención resumida ([intención]), comandos propuestos/cancelados, cambios de estrategia y recomendaciones de parar o éxito.
+- Los eventos son informativos; no alteran la lógica ni las decisiones. El resumen final del estado/progreso se mantiene al final.
+
 ## ProjectState (memoria ligera)
 
 - Mantiene snapshot del workspace: lenguajes, frameworks, archivos clave, estructura superficial y decisiones/hypótesis recientes.

@@ -64,10 +64,12 @@ class AssistantShell(Cmd):
             return
         objective = parts[0]
         max_attempts = int(parts[1]) if len(parts) > 1 else 3
+        sink = ConsoleEventSink()
         runner = agent.IterativeAgent(
             root=self.state.root,
             backend_manager=self.state.backend_manager,
             confirm_cfg=self.state.confirm,
+            event_sink=sink,
         )
         try:
             state = runner.run(objective, max_attempts=max_attempts)
@@ -264,10 +266,12 @@ def main(argv: List[str] | None = None) -> int:
         print(state.plan.to_text())
         return 0
     if args.command == "agent":
+        sink = ConsoleEventSink()
         runner = agent.IterativeAgent(
             root=state.root,
             backend_manager=state.backend_manager,
             confirm_cfg=confirm_cfg,
+            event_sink=sink,
         )
         result = runner.run(args.objective, max_attempts=args.max_attempts)
         print(result.summary())
@@ -279,3 +283,18 @@ def main(argv: List[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+class ConsoleEventSink:
+    def emit(self, event: str, message: str) -> None:
+        labels = {
+            "phase_changed": "[fase]",
+            "intention_set": "[intención]",
+            "command_proposed": "[comando]",
+            "command_cancelled": "[cancelado]",
+            "strategy_changed": "[estrategia]",
+            "stopping_recommended": "[detener]",
+            "success_detected": "[éxito]",
+        }
+        prefix = labels.get(event, "[evento]")
+        print(f"{prefix} {message}")

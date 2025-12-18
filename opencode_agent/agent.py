@@ -78,6 +78,7 @@ class IterativeAgent:
         backend_manager: backend.BackendManager,
         confirm_cfg: tools.ConfirmConfig,
         model: str = "local-model",
+        event_sink: Optional[object] = None,
     ) -> None:
         self.root = root
         self.backend = backend_manager
@@ -86,9 +87,11 @@ class IterativeAgent:
         self.state = ProjectState.load(root)
         self.messages: List[Dict[str, object]] = []
         self.current_objective: str = ""
+        self.event_sink = event_sink or _NoOpEvents()
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
+        self._emit("phase_changed", "Analizando…")
         self.current_objective = objective
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
@@ -102,11 +105,15 @@ class IterativeAgent:
 
         with self.backend:
             self._bootstrap_messages(objective)
+            self._emit("phase_changed", "Planificando…")
             self.state.plan = self._request_plan()
             self.state.save()
             for attempt_no in range(1, max_attempts + 1):
+                self._emit("phase_changed", "Ejecutando…")
                 action = self._request_action(attempt_no)
+                self._emit("intention_set", f"Intento {attempt_no}: {action.description or action.kind}")
                 result = self._execute_action(action)
+                self._emit("phase_changed", "Evaluando…")
                 evaluation = self._evaluate_goal(objective, result)
                 result.status = evaluation.status
                 result.evidence.extend(evaluation.evidence)
@@ -117,11 +124,13 @@ class IterativeAgent:
                     self.state.add_decision(
                         "No haré nada porque el objetivo ya está cumplido"
                     )
+                    self._emit("success_detected", "Evidencia suficiente de cumplimiento del objetivo")
                     break
                 if attempt_no >= max_attempts:
                     self.state.add_decision(
                         "He intentado varias veces y recomiendo parar"
                     )
+                    self._emit("stopping_recommended", "Límite de intentos alcanzado")
                     break
                 strategy, justification, discarded = self._choose_strategy(
                     evaluation, attempt_no, max_attempts
@@ -129,6 +138,7 @@ class IterativeAgent:
                 self.state.add_decision(
                     f"Estrategia: {strategy} (descarto: {', '.join(discarded)}) porque {justification}"
                 )
+                self._emit("strategy_changed", f"{strategy} :: {justification}")
                 if strategy in {"ask_user", "stop"}:
                     break
                 correction = self._request_correction(result, strategy, discarded)
@@ -244,8 +254,10 @@ class IterativeAgent:
     def _execute_action(self, action: Action) -> Attempt:
         if action.kind == "run" and action.command:
             try:
+                self._emit("command_proposed", f"Ejecutar: {' '.join(action.command)}")
                 result = tools.run_command(action.command, self.confirm_cfg, cwd=str(self.root))
             except Exception as exc:  # noqa: BLE001
+                self._emit("command_cancelled", str(exc))
                 return Attempt(
                     action="run",
                     returncode=None,
@@ -266,6 +278,7 @@ class IterativeAgent:
             )
         if action.kind == "write" and action.path and action.content is not None:
             try:
+                self._emit("command_proposed", f"Escribir: {action.path}")
                 message = tools.safe_write(str(Path(self.root, action.path)), action.content, self.confirm_cfg)
                 self.state.record_file(action.path)
                 evaluation = f"write -> {message}"
@@ -356,3 +369,16 @@ class IterativeAgent:
             justification = "Objetivo cumplido"
         discarded = [opt for opt in options if opt != strategy]
         return strategy, justification, discarded
+
+    def _emit(self, event: str, message: str) -> None:
+        try:
+            if hasattr(self.event_sink, "emit"):
+                self.event_sink.emit(event, message)
+        except Exception:
+            pass
+
+
+class _NoOpEvents:
+    def emit(self, event: str, message: str) -> None:  # noqa: D401
+        """No-op event sink."""
+        return None
