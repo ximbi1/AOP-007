@@ -1,16 +1,17 @@
 # AI-assisted Development CLI (Prototype)
 
-This repository contains a terminal-first assistant designed to operate inside any local workspace. It mirrors the spirit of tools like OpenCode: understand what is in the folder, plan work with the user, and only apply changes after explicit confirmation.
+This repository delivers a terminal-first development assistant inspired by OpenCode. It understands your workspace, plans with you, executes cautiously, streams concise status, and keeps a traceable memory—always prioritizing safety, humility, and human control.
 
-## Features
+## Why it stands out
 
-- Interactive CLI with a small REPL (`omoc`) to inspect and modify projects cautiously.
-- Iterative agent mode: objetivo → plan → acción → evaluación → corrección with explicit attempts and state tracking.
-- Ligera memoria persistente: `ProjectState` guarda lenguajes, frameworks, archivos clave y decisiones en `.opencode/state.json` (carga automática si existe).
-- Built-in tools: list files, read file segments, regex search, safe writes with diffs, and guarded command execution.
-- Workspace analysis with strict filtering (.git, __pycache__, node_modules, artefactos compilados) and framework detection only with clear structural evidence; weak signals become “low confidence” hints.
-- Plan-before-action workflow: propose steps, request confirmation, and execute sequentially.
-- Git helpers: initialize repositories, show status/diffs, create automatic commits, and revert.
+- **Structured agent loop**: objective → plan → action → evaluation → correction, with explicit attempts and bounded retries.
+- **Real-time observability**: console events for phase changes, intent summaries, proposed/cancelled commands, strategy shifts, stop/success notices—never exposing chain-of-thought.
+- **Persistent lightweight memory**: `ProjectState` snapshots languages, structural hints, key files, decisions, hypotheses, created files, and evaluations in `.opencode/state.json` for continuity.
+- **Heuristic semantic understanding**: strong-evidence framework detection (entry/config/bootstrap + deps), low-confidence hints for weak signals, import-centrality to surface likely core files, and strict filtering of noise (.git, __pycache__, venvs, node_modules, build artifacts, compiled extensions).
+- **Goal-aware evaluation**: creation goals are marked SUCCESS when artifacts are written; no forced execution. Observables only (stdout/stderr, exit codes, file changes, tests).
+- **Safety contracts**: confirmations before writes/commands, diff previews, security and behavioral tests to prevent reckless actions.
+- **Local-first LLM backend**: auto-starts llama.cpp `llama-server` (configurable) so you can run fully offline.
+- **Git-aware ergonomics**: status/diff helpers, commit/revert with confirmation.
 
 ## Quickstart
 
@@ -18,78 +19,69 @@ This repository contains a terminal-first assistant designed to operate inside a
 # Help
 python -m opencode_agent.cli --help
 
-# Interactive mode
+# Interactive REPL
 python -m opencode_agent.cli interactive
 
-# Analyze current workspace
+# Analyze current workspace (read-only)
 python -m opencode_agent.cli analyze .
 
-# Iterative agent loop (starts local llama-server if needed)
-python -m opencode_agent.cli agent "tu objetivo" --max-attempts 3
+# Iterative agent loop (auto-starts local llama-server if needed)
+python -m opencode_agent.cli agent "your objective" --max-attempts 3
 
-# (Optional) use the bundled launcher, add it to PATH and run
-./opencode agent "tu objetivo"
+# Optional launcher: add to PATH and run
+./opencode agent "your objective"
 ```
 
-Interactive mode exposes commands like `list`, `read`, `search`, `write`, `plan`, `run`, `agent`, and `git` helpers. Every write or command execution requests confirmation unless `--yes` is provided.
+Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agent`, and git helpers. Every write or command execution requests confirmation unless `--yes` is provided.
 
-## Design Principles
+## Design principles
 
-- Never modify files without explicit user approval.
-- Always show a plan and a diff before applying changes.
-- Be transparent about detected context (languages, frameworks, missing pieces).
-- Keep session state in memory to remember recent decisions.
-- Separate phases: analysis → planning → execution → evaluation → correction; capture stdout/stderr from commands and retry with hypotheses when something fails.
-- Decide cuándo parar: si el objetivo ya está cumplido, si se agotaron intentos o si se requiere decisión humana.
-- Comprensión semántica ligera (heurística): identifica posibles entrypoints, archivos centrales y configs con niveles de confianza (alta/media/baja). Siempre se presenta como hipótesis y requiere confirmación humana.
-
-## Notes
-
-This is an initial prototype focused on safety and clarity. Extend the command set or plug different model backends by expanding the planner and executor stubs in `opencode_agent/`.
+- No file modifications without explicit approval; always show plan and diff first.
+- Transparent context: languages, structural frameworks, key files, missing scaffolding, low-confidence hints when evidence is weak.
+- Clear phases: analysis → planning → execution → evaluation → correction; capture stdout/stderr and retry with hypotheses when needed.
+- Stop when appropriate: success detected, attempts exhausted, or human decision required.
+- Treat model output as hypotheses; prefer “not clear” over false certainty.
 
 ## Local model backend
 
-- The agent auto-starts a `llama-server` (llama.cpp) using the defaults baked into `opencode_agent/backend.py`:
+- Defaults (configurable in `opencode_agent/backend.py`):
   - Binary: `/home/ximbi/MODELOSIA/llama.cpp/build/bin/llama-server`
   - Model: `~/MODELOSIA/models/granite/granite-4.0-h-1b-Q4_0.gguf`
-  - Arguments: `-t 10 -c 25096 -b 512 -ngl 0 --temp 0.2 --top_k 80 --top_p 0.9 --repeat_penalty 1.05 --mirostat 0 --port 8080 --host 0.0.0.0`
-- The launcher sets `LD_LIBRARY_PATH` to `/opt/intel/oneapi/mkl/2025.3/lib/intel64` for the server process.
-- Logs live at `~/.cache/opencode/llama_server.log`.
+  - Args: `-t 10 -c 25096 -b 512 -ngl 0 --temp 0.2 --top_k 80 --top_p 0.9 --repeat_penalty 1.05 --mirostat 0 --port 8080 --host 0.0.0.0`
+- Launcher sets `LD_LIBRARY_PATH=/opt/intel/oneapi/mkl/2025.3/lib/intel64`.
+- Logs: `~/.cache/opencode/llama_server.log`.
 
-## Interacción y eventos en tiempo real
+## Workspace analysis & semantic hints
 
-- Durante el modo agente, se muestran eventos breves en consola (sin razonamiento interno): cambios de fase ([fase]), intención resumida ([intención]), comandos propuestos/cancelados, cambios de estrategia y recomendaciones de parar o éxito.
-- Los eventos son informativos; no alteran la lógica ni las decisiones. El resumen final del estado/progreso se mantiene al final.
+- Strict path filtering; no noise from VCS, caches, virtualenvs, node_modules, build/dist, or compiled artifacts.
+- Framework detection only with structural evidence; weak signals become low-confidence hints, not facts.
+- Centrality heuristic highlights most-imported files; absence of evidence is stated explicitly.
+- Reports key files, languages, missing scaffolding, and central files succinctly.
 
-## ProjectState (memoria ligera)
+## ProjectState (lightweight memory)
 
-- Mantiene snapshot del workspace: lenguajes, frameworks, archivos clave, estructura superficial y decisiones/hypótesis recientes.
-- Se carga automáticamente desde `.opencode/state.json` si existe y se actualiza tras cada intento con evidencia útil.
-- No realiza análisis profundo; solo conserva contexto para próximas ejecuciones.
+- Snapshots context and decisions in `.opencode/state.json`, auto-loaded and updated per attempt.
+- Keeps shallow structure and recent choices; avoids deep AST/LSP analysis by design.
 
-## Comprensión semántica ligera
+## Goal-oriented evaluation
 
-- Componente `ProjectUnderstanding` genera pistas opcionales usando heurísticas simples: nombres comunes (`main.*`, `app.*`, `index.*`, `server.*`, `cli.*`), configs conocidas (`package.json`, `pyproject.toml`, etc.), carpetas típicas (`src/`, `app/`, `tests/`) y referencias por imports (regex, sin AST).
-- Cada pista incluye nivel de confianza (alta/media/baja) y una razón explicable; nunca se asume como verdad absoluta.
-- El agente usa estas pistas solo para justificar por qué prioriza un archivo o solicita confirmación; puede decir “no tengo suficiente certeza” y pedir guía humana.
-- El análisis añade centralidad heurística (archivos más importados) y explica por qué una señal pesa más (señales estructurales superan a contextuales); si no hay evidencia suficiente, lo indica explícitamente.
+- Explicit evidence check after each attempt: `SUCCESS`, `PARTIAL`, or `FAILURE` based only on observables.
+- Creation goals: SUCCESS when artifacts are generated; no forced execution.
+- Strategies when evidence is thin: change approach, simplify, ask human, or stop.
 
-## Evaluación por objetivos
+## Real-time events (UX)
 
-- Tras cada intento, el agente responde explícitamente “¿qué evidencia tengo de que el objetivo se ha cumplido?”
-- Estados posibles: `SUCCESS` (evidencia suficiente), `PARTIAL` (progreso, pero incompleto), `FAILURE` (sin evidencia suficiente).
-- Basado en observables: stdout/stderr, códigos de salida, archivos creados/modificados.
-- Con evidencia insuficiente, puede elegir estrategias: cambiar enfoque, simplificar, pedir decisión humana o detenerse.
+- Concise console events: phases, intents, proposed/cancelled commands, strategy changes, stop/success recommendations.
+- Final summary remains as the authoritative report; events are informative, not reasoning dumps.
 
-## Cuándo el agente decide parar
+## Safety & behavioral tests
 
-- Si detecta que el objetivo ya está cumplido: declara éxito y no ejecuta más acciones.
-- Si alcanza el límite de intentos sin evidencia suficiente: recomienda parar o solicitar intervención humana.
-- Puede optar por no hacer nada cuando la evidencia indica que no se requieren más pasos.
+- `pytest` suite enforces ethics: no action if goal already met, stop recommendation after repeated failures, human prompt on ambiguity, confirmation for risky actions.
+- ProjectState tests ensure deterministic persistence; security tests guard against unconfirmed writes/commands and blind overwrites.
+- Run `pytest --maxfail=1 --disable-warnings -q` to validate contracts.
 
-## Tests y contratos de comportamiento
+## Extending
 
-- Suite de `pytest` que valida conductas clave: no actuar si el objetivo ya está cumplido, recomendar parar tras varios fallos, pedir decisión humana ante ambigüedad y exigir confirmaciones para acciones riesgosas.
-- Tests de `ProjectState` garantizan persistencia determinista de decisiones, planes y evaluaciones en `.opencode/state.json`.
-- Tests de seguridad verifican que no se ejecuten comandos ni escrituras sin confirmación ni se sobrescriban archivos sin diffs previos.
-- Ejecuta `pytest` en el repositorio para validar estos contratos antes de usar el agente.
+- Add tools, adjust heuristics, or plug a different model backend by extending `opencode_agent/` components.
+- Event sink is pluggable for alternative UIs; default prints to console.
+- Keep the core philosophy: cautious execution, evidence-first decisions, and human-in-the-loop control.
