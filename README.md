@@ -13,6 +13,7 @@ This repository delivers a terminal-first development assistant inspired by Open
 - **Local-first LLM backend**: auto-starts llama.cpp `llama-server` (configurable) so you can run fully offline.
 - **Git-aware ergonomics**: status/diff helpers, commit/revert with confirmation.
 - **Composite goals handled safely**: multi-part instructions are split into independent sub-goals (inspect/read vs create/modify), each inferred, planned, executed, and evaluated in isolation; global success only when all sub-goals succeed.
+- **Semantic understanding as a first-class artifact**: per-file semantic summaries from INSPECT plus a repository-level behavior/purpose synthesis (one LLM call) feed documentation generation; no snippets or code execution required.
 
 ## Quickstart
 
@@ -43,6 +44,7 @@ Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agen
 - Stop when appropriate: success detected, attempts exhausted, or human decision required.
 - Treat model output as hypotheses; prefer “not clear” over false certainty.
 - Respect sub-goal boundaries: each subobjective uses its exact text for inference and evidence; no cross-contamination of types or artifacts.
+- Keep interpretation separate: INSPECT gathers evidence, SEMANTIC_SYNTHESIS interprets behavior/purpose, CREATE_ARTIFACT writes docs from that understanding.
 
 ## Local model backend
 
@@ -73,10 +75,21 @@ Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agen
 - Strategies when evidence is thin: change approach, simplify, ask human, or stop.
 - Composite goals: each sub-goal is evaluated independently; global SUCCESS only when all provide matching evidence (reads for INSPECT, writes for CREATE/MODIFY).
 
+## Agent pipeline (high level)
+
+- **Analysis**: workspace scan with strict filtering; detect languages, key/central files, and structural scaffolding.
+- **INSPECT (read-only)**: safe file reads produce per-file semantic summaries (no execution, no snippets needed for downstream); evidence is stored in `ProjectState`.
+- **Semantic synthesis**: a single LLM call turns inspected evidence into a behavior/purpose explanation (repo-level), stored structurally (behavior/purpose fields). No code is re-read or executed here.
+- **Planning**: per sub-goal (supports composite objectives). Plans are regenerated in isolation for each subobjective using its exact text.
+- **Execution**: gated tools per type (INSPECT → read; CREATE/MODIFY → write/diff with confirmation; EXECUTE → run with confirmation). Composite goals advance only when a sub-goal succeeds.
+- **Evaluation**: evidence-only SUCCESS/PARTIAL/FAILURE; creation requires real writes, inspection requires reads. Composite SUCCESS only when all sub-goals succeed.
+- **Documentation (CREATE_ARTIFACT)**: README/docs are drafted from semantic understanding (file summaries or repo-level synthesis) plus structural signals (languages, key/central files). No code snippets or speculative behavior; explicit note that no execution was performed.
+- **Events/UX**: real-time events for phase, intent, strategy, stop/success; final summary remains the authoritative report.
+
 ## README generation for CREATE_ARTIFACT
 
 - Default README writes are auto-proposed when a create sub-goal lacks a plan; the target filename is inferred from the request (e.g., README.md).
-- Content is evidence-based: uses detected languages, key files, central files, and observed structure; scopes adapt to “single script” vs “repository” wording.
+- Content is evidence-based: uses detected languages, key files, central files, semantic summaries (file-level) or synthesized repo understanding (behavior/purpose); scopes adapt to “single script” vs “repository” wording.
 - Language is honest and non-speculative (“based on inspected files”, “no execution performed”); no placeholders or invented behavior.
 
 ## Real-time events (UX)

@@ -23,6 +23,10 @@ class ProjectState:
     frameworks: Set[str] = field(default_factory=set)
     key_files: List[str] = field(default_factory=list)
     directories: List[str] = field(default_factory=list)
+    central_files: List[str] = field(default_factory=list)
+    semantic_summaries: Dict[str, str] = field(default_factory=dict)
+    project_understanding: str = ""
+    project_understanding_structured: Dict[str, str] = field(default_factory=dict)
     plan: List[str] = field(default_factory=list)
     decisions: List[str] = field(default_factory=list)
     hypotheses: List[str] = field(default_factory=list)
@@ -45,6 +49,10 @@ class ProjectState:
             frameworks=set(data.get("frameworks", [])),
             key_files=data.get("key_files", []),
             directories=data.get("directories", []),
+            central_files=data.get("central_files", []),
+            semantic_summaries=data.get("semantic_summaries", {}),
+            project_understanding=data.get("project_understanding", ""),
+            project_understanding_structured=data.get("project_understanding_structured", {}),
             decisions=data.get("decisions", []),
             hypotheses=data.get("hypotheses", []),
             files_created=data.get("files_created", []),
@@ -62,6 +70,10 @@ class ProjectState:
             "frameworks": sorted(self.frameworks),
             "key_files": self.key_files,
             "directories": self.directories,
+            "central_files": self.central_files,
+            "semantic_summaries": self.semantic_summaries,
+            "project_understanding": self.project_understanding,
+            "project_understanding_structured": self.project_understanding_structured,
             "decisions": self.decisions[-50:],
             "hypotheses": self.hypotheses[-50:],
             "files_created": self.files_created[-100:],
@@ -82,6 +94,9 @@ class ProjectState:
         self.frameworks = set(report.frameworks)
         self.key_files = report.key_files if hasattr(report, "key_files") else self.key_files
         self.directories = self._snapshot_directories(self.root)
+        if hasattr(report, "central_files"):
+            self.central_files = report.central_files
+        # semantic_summaries are accumulated during inspection
 
     def add_decision(self, text: str) -> None:
         self.decisions.append(text)
@@ -102,6 +117,25 @@ class ProjectState:
         if self.key_files:
             parts.append("Archivos clave:")
             parts.extend([f"- {k}" for k in self.key_files[:10]])
+        if self.central_files:
+            parts.append("Archivos centrales (heurístico):")
+            parts.extend([f"- {c}" for c in self.central_files[:5]])
+        if self.semantic_summaries:
+            parts.append("Resúmenes semánticos (disponibles):")
+            for name, summary in list(self.semantic_summaries.items())[:3]:
+                parts.append(f"- {name}: {summary[:120]}...")
+        if self.project_understanding:
+            parts.append("Síntesis semántica (repo):")
+            parts.append(f"- {self.project_understanding[:140]}...")
+        if self.project_understanding_structured:
+            b = self.project_understanding_structured.get("behavior")
+            p = self.project_understanding_structured.get("purpose")
+            if b or p:
+                parts.append("Síntesis estructurada (repo):")
+                if b:
+                    parts.append(f"- Comportamiento: {b[:140]}...")
+                if p:
+                    parts.append(f"- Propósito: {p[:140]}...")
         if self.directories:
             parts.append("Estructura (niveles superiores):")
             parts.extend([f"- {d}" for d in self.directories[:15]])

@@ -95,6 +95,8 @@ class IterativeAgent:
         self.current_sub_index: int = 0
         self._sub_files_created_base: int = 0
         self._sub_objectives_text: List[str] = []
+        self._last_inspected_name: Optional[str] = None
+        self._last_inspected_snippet: Optional[str] = None
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
@@ -103,6 +105,9 @@ class IterativeAgent:
         self._sub_objectives_text = list(self.sub_objectives)
         self.current_sub_index = 0
         self._set_current_subobjective(0)
+        self.state.semantic_summaries.clear()
+        self.state.project_understanding = ""
+        self.state.project_understanding_structured = {}
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
         self.state.add_decision(f"Objetivo: {objective}")
@@ -120,6 +125,8 @@ class IterativeAgent:
                 self._bootstrap_messages(self.current_objective)
                 self._emit("phase_changed", "Planificando…")
                 self.state.plan = self._request_plan()
+                if self.objective_type == "CREATE_ARTIFACT":
+                    self._ensure_semantic_synthesis()
                 self.state.save()
                 sub_success = False
                 for attempt_no in range(1, max_attempts + 1):
@@ -235,6 +242,8 @@ class IterativeAgent:
             gated = self._gate_action_by_type(proposed)
             if self.objective_type == "CREATE_ARTIFACT" and gated.kind == "none":
                 return self._default_create_action()
+            if self.objective_type == "CREATE_ARTIFACT" and gated.kind == "write" and not gated.content:
+                return self._fill_write_action(gated)
             return gated
         if self.objective_type == "CREATE_ARTIFACT":
             return self._default_create_action()
@@ -336,8 +345,16 @@ class IterativeAgent:
             target = Path(self.root, action.path)
             try:
                 content = tools.read_file(str(target), start=1, lines=400)
-                snippet = content.strip().splitlines()[0] if content.strip().splitlines() else ""
-                desc = f"Read {action.path}; first line: {snippet[:160]}" if snippet else f"Read {action.path}; content inspected"
+                lines = content.strip().splitlines()
+                snippet = "\n".join(lines[:5]) if lines else ""
+                self._last_inspected_name = target.name
+                self._last_inspected_snippet = snippet[:400] if snippet else None
+                summary = self._summarize_content(target.name, lines)
+                if summary:
+                    self.state.semantic_summaries[target.name] = summary
+                desc = (
+                    f"Read {action.path}; snippet:\n{snippet[:160]}" if snippet else f"Read {action.path}; content inspected"
+                )
                 evidence = [f"READ_ACTION: read {action.path}", f"SUMMARY: {desc}"]
                 note = "Leído sin ejecución"
                 return Attempt(
@@ -534,6 +551,13 @@ class IterativeAgent:
         self.state.plan = []
         self.state.evaluation = Evaluation()
         self._sub_files_created_base = len(self.state.files_created)
+        self._last_inspected_name = None
+        self._last_inspected_snippet = None
+        if index == 0:
+            self.state.semantic_summaries.clear()
+            self.state.project_understanding = ""
+            self.state.project_understanding_structured = {}
+            self.state.project_understanding = ""
 
     def _parse_sub_objectives(self, objective: str) -> List[str]:
         text = objective.replace(";", " y ")
@@ -604,14 +628,30 @@ class IterativeAgent:
         languages = sorted(self.state.languages) if self.state.languages else []
         key_files = self.state.key_files[:5]
         central = [c for c in self.state.central_files if not c.lower().startswith("no se detecta")] if self.state.central_files else []
+        summaries = self.state.semantic_summaries
 
-        description = []
+        description: List[str] = []
         if is_file_scope and focus_name:
+            description.append("## Overview")
             description.append(f"This README documents the file `{focus_name}` based on inspected content.")
         elif is_file_scope:
+            description.append("## Overview")
             description.append("This README documents the referenced script based on inspected content.")
         else:
+            description.append("## Overview")
             description.append("This README summarizes the repository using observable evidence.")
+
+        if summaries:
+            if is_file_scope and focus_name and focus_name in summaries:
+                description.append("\n## Behavior")
+                description.append(summaries[focus_name])
+            else:
+                description.append("\n## Behavior by file")
+                for name, summary in list(summaries.items())[:5]:
+                    description.append(f"- {name}: {summary}")
+        elif self.state.project_understanding:
+            description.append("\n## Behavior")
+            description.append(self.state.project_understanding)
 
         if languages:
             description.append(f"Detected languages: {', '.join(languages)}.")
@@ -624,15 +664,108 @@ class IterativeAgent:
         if not (languages or key_files or central):
             description.append("Evidence is limited; only minimal structure was observable.")
 
-        description.append("All statements are based solely on inspected files; no execution performed.")
+        description.append("\nAll statements are based solely on inspected files; no execution performed.")
 
-        content_lines = [f"# {target}", "", *description]
+        title = "# README" if target.lower().startswith("readme") else f"# {target}"
+        content_lines = [title, "", *description]
         return Action(
             kind="write",
             description=f"Crear {target}",
             path=target,
             content="\n".join(content_lines) + "\n",
         )
+
+    def _fill_write_action(self, action: Action) -> Action:
+        if action.content:
+            return action
+        default = self._default_create_action()
+        return Action(
+            kind="write",
+            description=action.description or default.description,
+            path=action.path or default.path,
+            content=default.content,
+        )
+
+    def _ensure_semantic_synthesis(self) -> None:
+        if self.state.project_understanding:
+            return
+        scope = "file" if len(self.state.semantic_summaries) == 1 else "repository"
+        payload = {
+            "scope": scope,
+            "user_intent": self.current_objective,
+            "files_inspected": self.state.semantic_summaries,
+            "languages": sorted(self.state.languages),
+            "structure": self.state.directories[:20],
+            "key_files": self.state.key_files[:10],
+            "central_files": self.state.central_files[:10],
+            "constraints": ["No execution performed", "Only inspected content"],
+        }
+        system = (
+            "You are a semantic summarizer. Produce one concise, human explanation with two parts: "
+            "Behavior (what it does, observable actions) and Purpose (probable role/utility), based only on the provided evidence. "
+            "Do not include code snippets or speculate beyond evidence."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        try:
+            response = backend.call_llama(self.backend.settings.base_url, {"model": self.model, "messages": messages, "temperature": 0.2})
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if content:
+                parsed = None
+                try:
+                    parsed = json.loads(content)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict) and (parsed.get("behavior") or parsed.get("purpose")):
+                    self.state.project_understanding_structured = {
+                        "behavior": str(parsed.get("behavior", "")).strip(),
+                        "purpose": str(parsed.get("purpose", "")).strip(),
+                    }
+                    combined = []
+                    if parsed.get("behavior"):
+                        combined.append(f"Behavior: {parsed.get('behavior')}")
+                    if parsed.get("purpose"):
+                        combined.append(f"Purpose: {parsed.get('purpose')}")
+                    self.state.project_understanding = " ".join(combined).strip()
+                else:
+                    self.state.project_understanding = content.strip()
+        except Exception:
+            pass
+
+    def _summarize_content(self, name: str, lines: List[str]) -> str:
+        if not lines:
+            return "No observable content (empty read)."
+        text = "\n".join(lines[:200]).lower()
+        line_count = len(lines)
+        statements: List[str] = []
+        statements.append(f"File {name}: ~{line_count} lines inspected. Based on code structure only, no execution performed.")
+
+        def has_any(tokens):
+            return any(tok in text for tok in tokens)
+
+        if has_any(["datetime", "time"]):
+            statements.append("Handles date/time operations; likely prints or formats timestamps.")
+        if has_any(["print"]):
+            statements.append("Outputs information to the console.")
+        if has_any(["input("]):
+            statements.append("Requests user input from stdin.")
+        if has_any(["argparse", "sys.argv"]):
+            statements.append("Accepts command-line arguments.")
+        if has_any(["requests", "http", "urllib", "fetch"]):
+            statements.append("Performs HTTP/network operations.")
+        if has_any(["open(", "with open", "read(", "write("]):
+            statements.append("Interacts with the filesystem (read/write).")
+        if has_any(["class ", "def "]):
+            statements.append("Defines functions/classes for reusable behavior.")
+        if has_any(["if __name__ == '__main__'", "main("]):
+            statements.append("Contains an entrypoint section for direct execution.")
+
+        if len(statements) == 1:
+            statements.append("No specific behaviors detected beyond basic structure.")
+
+        return " ".join(statements)
 
     def _gate_action_by_type(self, action: Action) -> Action:
         # INSPECT: allow only read; convert benign run->read when possible; avoid execution/ls
