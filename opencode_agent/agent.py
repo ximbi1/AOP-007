@@ -462,7 +462,18 @@ class IterativeAgent:
     def _infer_objective_type(self, objective: str) -> str:
         text = objective.lower()
         file_tokens = [".md", ".py", ".txt", "readme", "documentacion", "documentación", "doc"]
-        create_verbs = ["crear", "crea", "genera", "generar", "escribe", "escribir", "generate", "write", "add file"]
+        create_verbs = [
+            "crear",
+            "crea",
+            "crees",
+            "genera",
+            "generar",
+            "escribe",
+            "escribir",
+            "generate",
+            "write",
+            "add file",
+        ]
         create_nouns = ["script", "archivo", "fichero", "file"]
         modify_keywords = ["modifica", "modificar", "refactor", "ajusta", "update", "cambia"]
         exec_keywords = ["ejecuta", "run", "ejecutar", "execute"]
