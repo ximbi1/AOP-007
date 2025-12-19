@@ -141,3 +141,18 @@ def test_risky_action_requires_confirmation(monkeypatch, tmp_path):
     assert any("recomiendo parar" in d or "Objetivo" in d for d in state.decisions)
     files = [p.relative_to(tmp_path) for p in tmp_path.rglob("*") if p.is_file()]
     assert files == [Path(".opencode/state.json")]
+
+
+def test_composite_inference_prefers_create_over_inspect(tmp_path):
+    objective = "lee el fichero y dime qué hace, y crea el README.md explicando qué hace el script"
+    ag = agent.IterativeAgent(
+        root=tmp_path,
+        backend_manager=DummyBackend(),
+        confirm_cfg=tools.ConfirmConfig(assume_yes=True),
+    )
+    sub_objs = ag._parse_sub_objectives(objective)
+    assert len(sub_objs) >= 2
+    first_type = ag._infer_objective_type(sub_objs[0])
+    second_type = ag._infer_objective_type(sub_objs[1])
+    assert first_type == "INSPECT"
+    assert second_type == "CREATE_ARTIFACT"

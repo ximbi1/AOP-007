@@ -518,7 +518,9 @@ class IterativeAgent:
             if conn in text.lower():
                 raw_parts = [p.strip() for p in text.split(conn) if p.strip()]
                 if len(raw_parts) > 1:
-                    parts = raw_parts
+                    head = raw_parts[0]
+                    tail = conn.join(raw_parts[1:]).strip()
+                    parts = [head, tail] if tail else [head]
                     break
         return parts or [objective]
 
