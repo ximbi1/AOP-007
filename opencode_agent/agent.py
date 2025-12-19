@@ -464,33 +464,15 @@ class IterativeAgent:
     def _infer_objective_type(self, objective: str) -> str:
         text = objective.lower()
         file_tokens = [".md", ".py", ".txt", "readme", "documentacion", "documentación", "doc"]
-        create_keywords = [
-            "crear",
-            "crea",
-            "genera",
-            "generar",
-            "escribe",
-            "escribir",
-            "script",
-            "archivo",
-            "fichero",
-            "file",
-            "generate",
-            "write",
-            "add file",
-        ]
+        create_verbs = ["crear", "crea", "genera", "generar", "escribe", "escribir", "generate", "write", "add file"]
+        create_nouns = ["script", "archivo", "fichero", "file"]
         modify_keywords = ["modifica", "modificar", "refactor", "ajusta", "update", "cambia"]
-        if any(k in text for k in modify_keywords) and any(tok in text for tok in file_tokens):
-            return "MODIFY"
-        if any(k in text for k in create_keywords) and any(tok in text for tok in file_tokens):
-            return "CREATE_ARTIFACT"
-        if any(k in text for k in create_keywords):
-            return "CREATE_ARTIFACT"
         exec_keywords = ["ejecuta", "run", "ejecutar", "execute"]
-        if any(k in text for k in exec_keywords):
-            return "EXECUTE"
-        if any(k in text for k in modify_keywords):
-            return "MODIFY"
+
+        create_match = any(k in text for k in create_verbs) or (
+            any(n in text for n in create_nouns) and any(v in text for v in create_verbs)
+        )
+        modify_match = any(k in text for k in modify_keywords)
         inspect_keywords = [
             "que hace",
             "¿que hace",
@@ -508,6 +490,17 @@ class IterativeAgent:
             "list",
             "consulta",
         ]
+
+        if modify_match and any(tok in text for tok in file_tokens):
+            return "MODIFY"
+        if create_match and any(tok in text for tok in file_tokens):
+            return "CREATE_ARTIFACT"
+        if create_match:
+            return "CREATE_ARTIFACT"
+        if any(k in text for k in exec_keywords):
+            return "EXECUTE"
+        if modify_match:
+            return "MODIFY"
         if any(k in text for k in inspect_keywords):
             return "INSPECT"
         return "UNKNOWN"
