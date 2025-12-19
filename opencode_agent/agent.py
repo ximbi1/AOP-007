@@ -94,17 +94,15 @@ class IterativeAgent:
         self.sub_objectives: List[str] = []
         self.current_sub_index: int = 0
         self._sub_files_created_base: int = 0
+        self._sub_objectives_text: List[str] = []
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
         self._emit("phase_changed", "Analizando…")
         self.sub_objectives = self._parse_sub_objectives(objective)
+        self._sub_objectives_text = list(self.sub_objectives)
         self.current_sub_index = 0
-        self.current_objective = self.sub_objectives[0]
-        self.objective_type = self._infer_objective_type(self.current_objective)
-        self.objective_scope_here = self._mentions_here(self.current_objective)
-        self.no_execute_requested = self._mentions_no_execute(self.current_objective)
-        self._sub_files_created_base = len(self.state.files_created)
+        self._set_current_subobjective(0)
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
         self.state.add_decision(f"Objetivo: {objective}")
@@ -510,6 +508,17 @@ class IterativeAgent:
         terms = ["no lo ejecutes", "sin ejecutar", "solo lee", "no ejecutar", "do not run", "just read"]
         return any(t in text for t in terms)
 
+    def _set_current_subobjective(self, index: int) -> None:
+        self.current_sub_index = index
+        raw_text = self._sub_objectives_text[index]
+        self.current_objective = raw_text
+        self.objective_type = self._infer_objective_type(raw_text)
+        self.objective_scope_here = self._mentions_here(raw_text)
+        self.no_execute_requested = self._mentions_no_execute(raw_text)
+        self.state.plan = []
+        self.state.evaluation = Evaluation()
+        self._sub_files_created_base = len(self.state.files_created)
+
     def _parse_sub_objectives(self, objective: str) -> List[str]:
         text = objective.replace(";", " y ")
         connectors = [" y ", " and ", " además ", " tambien ", " también ", " y luego ", " y después ", " y despues "]
@@ -531,13 +540,7 @@ class IterativeAgent:
         if not self._has_next_subobjective():
             return
         self.current_sub_index += 1
-        self.current_objective = self.sub_objectives[self.current_sub_index]
-        self.objective_type = self._infer_objective_type(self.current_objective)
-        self.objective_scope_here = self._mentions_here(self.current_objective)
-        self.no_execute_requested = self._mentions_no_execute(self.current_objective)
-        self.state.plan = []
-        self.state.evaluation = Evaluation()
-        self._sub_files_created_base = len(self.state.files_created)
+        self._set_current_subobjective(self.current_sub_index)
         self._emit("intention_set", f"Nuevo subobjetivo: {self.current_objective}")
 
     def _mentions_here(self, objective: str) -> bool:
