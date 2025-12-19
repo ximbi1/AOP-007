@@ -93,6 +93,7 @@ class IterativeAgent:
         self.no_execute_requested: bool = False
         self.sub_objectives: List[str] = []
         self.current_sub_index: int = 0
+        self._sub_files_created_base: int = 0
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
@@ -103,6 +104,7 @@ class IterativeAgent:
         self.objective_type = self._infer_objective_type(self.current_objective)
         self.objective_scope_here = self._mentions_here(self.current_objective)
         self.no_execute_requested = self._mentions_no_execute(self.current_objective)
+        self._sub_files_created_base = len(self.state.files_created)
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
         self.state.add_decision(f"Objetivo: {objective}")
@@ -115,6 +117,8 @@ class IterativeAgent:
 
         with self.backend:
             while True:
+                self.state.plan = []
+                self.state.evaluation = Evaluation()
                 self._bootstrap_messages(self.current_objective)
                 self._emit("phase_changed", "Planificando…")
                 self.state.plan = self._request_plan()
@@ -229,7 +233,8 @@ class IterativeAgent:
         data = _extract_json(response) or {}
         raw_action = data.get("action") if isinstance(data, dict) else None
         if isinstance(raw_action, dict):
-            return Action.from_model(raw_action)
+            proposed = Action.from_model(raw_action)
+            return self._gate_action_by_type(proposed)
         return Action(kind="none", description="Sin acción propuesta")
 
     def _request_correction(self, result: Attempt, strategy: str, discarded: List[str]) -> str:
@@ -392,15 +397,19 @@ class IterativeAgent:
                 evidence.append("No se ha leído ningún archivo relevante")
         elif self.objective_type == "CREATE_ARTIFACT" and status != "FAILURE":
             artifact_signal = False
-            if self.state.files_created:
+            new_files = self.state.files_created[self._sub_files_created_base :]
+            if new_files:
                 artifact_signal = True
-                evidence.append(f"Archivos creados: {', '.join(self.state.files_created[-3:])}")
-            if attempt.action.startswith("write"):
+                evidence.append(f"Archivos creados: {', '.join(new_files[-3:])}")
+            if attempt.action.startswith("write") or "WRITE_ACTION" in " ".join(evidence):
                 artifact_signal = True
                 evidence.append("Acción de escritura realizada")
             if artifact_signal:
                 status = "SUCCESS"
                 evidence.append("Objetivo de creación cumplido (artefacto generado)")
+            else:
+                status = "PARTIAL" if status != "FAILURE" else status
+                evidence.append("Sin evidencia de escritura; creación pendiente")
         if attempt.status == "SUCCESS":
             if "test" in attempt.action.lower():
                 status = "SUCCESS"
@@ -531,6 +540,9 @@ class IterativeAgent:
         self.objective_type = self._infer_objective_type(self.current_objective)
         self.objective_scope_here = self._mentions_here(self.current_objective)
         self.no_execute_requested = self._mentions_no_execute(self.current_objective)
+        self.state.plan = []
+        self.state.evaluation = Evaluation()
+        self._sub_files_created_base = len(self.state.files_created)
         self._emit("intention_set", f"Nuevo subobjetivo: {self.current_objective}")
 
     def _mentions_here(self, objective: str) -> bool:
@@ -552,6 +564,27 @@ class IterativeAgent:
         if len(candidates) == 1:
             return candidates[0]
         return None
+
+    def _gate_action_by_type(self, action: Action) -> Action:
+        # INSPECT: allow only read; convert benign run->read when possible; avoid execution/ls
+        if self.objective_type == "INSPECT":
+            if action.kind == "run":
+                target = action.path or None
+                if not target:
+                    single = self._single_relevant_file()
+                    if single:
+                        target = str(single.relative_to(self.root))
+                return Action(kind="read", description=action.description or "Leer para inspeccionar", path=target)
+            if action.kind not in {"read"}:
+                single = self._single_relevant_file()
+                return Action(kind="read", description="Leer archivo para inspeccionar", path=str(single.relative_to(self.root)) if single else action.path)
+            return action
+        # CREATE_ARTIFACT: only write/diff-oriented actions are meaningful; block inspection commands
+        if self.objective_type == "CREATE_ARTIFACT":
+            if action.kind in {"read", "run"}:
+                return Action(kind="none", description="Esperando plan de escritura")
+            return action
+        return action
 
 
 class _NoOpEvents:
