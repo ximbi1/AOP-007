@@ -12,6 +12,7 @@ This repository delivers a terminal-first development assistant inspired by Open
 - **Safety contracts**: confirmations before writes/commands, diff previews, security and behavioral tests to prevent reckless actions.
 - **Local-first LLM backend**: auto-starts llama.cpp `llama-server` (configurable) so you can run fully offline.
 - **Git-aware ergonomics**: status/diff helpers, commit/revert with confirmation.
+- **Composite goals handled safely**: multi-part instructions are split into independent sub-goals (inspect/read vs create/modify), each inferred, planned, executed, and evaluated in isolation; global success only when all sub-goals succeed.
 
 ## Quickstart
 
@@ -41,6 +42,7 @@ Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agen
 - Clear phases: analysis → planning → execution → evaluation → correction; capture stdout/stderr and retry with hypotheses when needed.
 - Stop when appropriate: success detected, attempts exhausted, or human decision required.
 - Treat model output as hypotheses; prefer “not clear” over false certainty.
+- Respect sub-goal boundaries: each subobjective uses its exact text for inference and evidence; no cross-contamination of types or artifacts.
 
 ## Local model backend
 
@@ -57,6 +59,7 @@ Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agen
 - Framework detection only with structural evidence; weak signals become low-confidence hints, not facts.
 - Centrality heuristic highlights most-imported files; absence of evidence is stated explicitly.
 - Reports key files, languages, missing scaffolding, and central files succinctly.
+- Composite safety: INSPECT sub-goals stay read-only; CREATE/MODIFY sub-goals focus on diffs/writes with confirmation.
 
 ## ProjectState (lightweight memory)
 
@@ -68,11 +71,19 @@ Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agen
 - Explicit evidence check after each attempt: `SUCCESS`, `PARTIAL`, or `FAILURE` based only on observables.
 - Creation goals: SUCCESS when artifacts are generated; no forced execution.
 - Strategies when evidence is thin: change approach, simplify, ask human, or stop.
+- Composite goals: each sub-goal is evaluated independently; global SUCCESS only when all provide matching evidence (reads for INSPECT, writes for CREATE/MODIFY).
+
+## README generation for CREATE_ARTIFACT
+
+- Default README writes are auto-proposed when a create sub-goal lacks a plan; the target filename is inferred from the request (e.g., README.md).
+- Content is evidence-based: uses detected languages, key files, central files, and observed structure; scopes adapt to “single script” vs “repository” wording.
+- Language is honest and non-speculative (“based on inspected files”, “no execution performed”); no placeholders or invented behavior.
 
 ## Real-time events (UX)
 
 - Concise console events: phases, intents, proposed/cancelled commands, strategy changes, stop/success recommendations.
 - Final summary remains as the authoritative report; events are informative, not reasoning dumps.
+- Sub-goals are announced with type and index (e.g., subobjetivo 2/2 - CREATE_ARTIFACT) to keep the flow traceable.
 
 ## Safety & behavioral tests
 
