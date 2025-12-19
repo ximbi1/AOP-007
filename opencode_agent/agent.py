@@ -232,7 +232,12 @@ class IterativeAgent:
         raw_action = data.get("action") if isinstance(data, dict) else None
         if isinstance(raw_action, dict):
             proposed = Action.from_model(raw_action)
-            return self._gate_action_by_type(proposed)
+            gated = self._gate_action_by_type(proposed)
+            if self.objective_type == "CREATE_ARTIFACT" and gated.kind == "none":
+                return self._default_create_action()
+            return gated
+        if self.objective_type == "CREATE_ARTIFACT":
+            return self._default_create_action()
         return Action(kind="none", description="Sin acción propuesta")
 
     def _request_correction(self, result: Attempt, strategy: str, discarded: List[str]) -> str:
@@ -573,6 +578,61 @@ class IterativeAgent:
         if len(candidates) == 1:
             return candidates[0]
         return None
+
+    def _default_create_action(self) -> Action:
+        target = "README.md"
+        text = self.current_objective.lower()
+        tokens = text.replace(",", " ").split()
+        for tok in tokens:
+            if tok.endswith(".md") or tok.endswith(".txt"):
+                target = tok
+                break
+        file_scope_tokens = {"script", "archivo", "fichero", "file"}
+        file_exts = {".py", ".sh", ".js", ".ts", ".go", ".rs"}
+        focus_name = None
+        for tok in tokens:
+            if any(tok.endswith(ext) for ext in file_exts):
+                focus_name = tok
+                break
+        if not focus_name:
+            single = self._single_relevant_file()
+            if single:
+                focus_name = single.name
+
+        is_file_scope = bool(focus_name or any(w in file_scope_tokens for w in tokens))
+
+        languages = sorted(self.state.languages) if self.state.languages else []
+        key_files = self.state.key_files[:5]
+        central = [c for c in self.state.central_files if not c.lower().startswith("no se detecta")] if self.state.central_files else []
+
+        description = []
+        if is_file_scope and focus_name:
+            description.append(f"This README documents the file `{focus_name}` based on inspected content.")
+        elif is_file_scope:
+            description.append("This README documents the referenced script based on inspected content.")
+        else:
+            description.append("This README summarizes the repository using observable evidence.")
+
+        if languages:
+            description.append(f"Detected languages: {', '.join(languages)}.")
+        if key_files:
+            description.append("Key files detected:")
+            description.extend([f"- {kf}" for kf in key_files])
+        if central:
+            description.append("Files that appear central (imports/structure):")
+            description.extend([f"- {c}" for c in central[:5]])
+        if not (languages or key_files or central):
+            description.append("Evidence is limited; only minimal structure was observable.")
+
+        description.append("All statements are based solely on inspected files; no execution performed.")
+
+        content_lines = [f"# {target}", "", *description]
+        return Action(
+            kind="write",
+            description=f"Crear {target}",
+            path=target,
+            content="\n".join(content_lines) + "\n",
+        )
 
     def _gate_action_by_type(self, action: Action) -> Action:
         # INSPECT: allow only read; convert benign run->read when possible; avoid execution/ls
