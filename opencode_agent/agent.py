@@ -629,6 +629,7 @@ class IterativeAgent:
         key_files = self.state.key_files[:5]
         central = [c for c in self.state.central_files if not c.lower().startswith("no se detecta")] if self.state.central_files else []
         summaries = self.state.semantic_summaries
+        structured = self.state.project_understanding_structured
 
         description: List[str] = []
         if is_file_scope and focus_name:
@@ -641,30 +642,44 @@ class IterativeAgent:
             description.append("## Overview")
             description.append("This README summarizes the repository using observable evidence.")
 
-        if summaries:
+        if structured:
+            behavior = structured.get("behavior", "").strip()
+            purpose = structured.get("purpose", "").strip()
+            description.append("\n## What it does")
+            description.append(behavior or "No clear behavior summary available from inspected evidence.")
+            description.append("\n## What it is for")
+            description.append(purpose or "No clear purpose could be inferred from inspected evidence.")
+        elif summaries:
+            description.append("\n## What it does")
             if is_file_scope and focus_name and focus_name in summaries:
-                description.append("\n## Behavior")
                 description.append(summaries[focus_name])
             else:
-                description.append("\n## Behavior by file")
+                description.append("Summary based on inspected files:")
                 for name, summary in list(summaries.items())[:5]:
                     description.append(f"- {name}: {summary}")
+            description.append("\n## What it is for")
+            description.append("Purpose is inferred conservatively from inspected files; no execution performed.")
         elif self.state.project_understanding:
-            description.append("\n## Behavior")
+            description.append("\n## What it does")
             description.append(self.state.project_understanding)
+            description.append("\n## What it is for")
+            description.append("Purpose could not be derived beyond the inspected description.")
 
-        if languages:
-            description.append(f"Detected languages: {', '.join(languages)}.")
-        if key_files:
-            description.append("Key files detected:")
-            description.extend([f"- {kf}" for kf in key_files])
-        if central:
-            description.append("Files that appear central (imports/structure):")
-            description.extend([f"- {c}" for c in central[:5]])
-        if not (languages or key_files or central):
-            description.append("Evidence is limited; only minimal structure was observable.")
+        if languages or key_files or central:
+            description.append("\n## Project context")
+            if languages:
+                description.append(f"Languages: {', '.join(languages)}.")
+            if key_files:
+                description.append("Key files:")
+                description.extend([f"- {kf}" for kf in key_files])
+            if central:
+                description.append("Likely central files:")
+                description.extend([f"- {c}" for c in central[:5]])
+        else:
+            description.append("\n## Project context")
+            description.append("Limited structural evidence beyond inspected files.")
 
-        description.append("\nAll statements are based solely on inspected files; no execution performed.")
+        description.append("\nNote: This documentation is based on static inspection; no code was executed.")
 
         title = "# README" if target.lower().startswith("readme") else f"# {target}"
         content_lines = [title, "", *description]
@@ -693,6 +708,7 @@ class IterativeAgent:
         payload = {
             "scope": scope,
             "user_intent": self.current_objective,
+            "explanation_intent": self._explanation_intent(self.current_objective),
             "files_inspected": self.state.semantic_summaries,
             "languages": sorted(self.state.languages),
             "structure": self.state.directories[:20],
@@ -701,9 +717,10 @@ class IterativeAgent:
             "constraints": ["No execution performed", "Only inspected content"],
         }
         system = (
-            "You are a semantic summarizer. Produce one concise, human explanation with two parts: "
-            "Behavior (what it does, observable actions) and Purpose (probable role/utility), based only on the provided evidence. "
-            "Do not include code snippets or speculate beyond evidence."
+            "You are a semantic summarizer for documentation readers. Produce a concise, human explanation with two parts: "
+            "Behavior (what it does, observable actions) and Purpose (probable role/utility). "
+            "Use plain, human language and avoid internal analysis jargon. Base everything strictly on the provided evidence. "
+            "Do not include code snippets or speculate beyond evidence. Return JSON with keys 'behavior' and 'purpose' when possible."
         )
         messages = [
             {"role": "system", "content": system},
@@ -740,32 +757,43 @@ class IterativeAgent:
         text = "\n".join(lines[:200]).lower()
         line_count = len(lines)
         statements: List[str] = []
-        statements.append(f"File {name}: ~{line_count} lines inspected. Based on code structure only, no execution performed.")
+        statements.append(
+            f"Este archivo (`{name}`) tiene aproximadamente {line_count} líneas inspeccionadas. "
+            "La explicación se basa solo en la lectura del texto; no se ejecutó código."
+        )
 
         def has_any(tokens):
             return any(tok in text for tok in tokens)
 
         if has_any(["datetime", "time"]):
-            statements.append("Handles date/time operations; likely prints or formats timestamps.")
+            statements.append("Parece trabajar con fechas u horas y mostrarlas por consola.")
         if has_any(["print"]):
-            statements.append("Outputs information to the console.")
+            statements.append("Imprime información en la salida estándar.")
         if has_any(["input("]):
-            statements.append("Requests user input from stdin.")
+            statements.append("Solicita entrada del usuario en la consola.")
         if has_any(["argparse", "sys.argv"]):
-            statements.append("Accepts command-line arguments.")
+            statements.append("Acepta argumentos de línea de comandos.")
         if has_any(["requests", "http", "urllib", "fetch"]):
-            statements.append("Performs HTTP/network operations.")
+            statements.append("Realiza llamadas de red o peticiones HTTP.")
         if has_any(["open(", "with open", "read(", "write("]):
-            statements.append("Interacts with the filesystem (read/write).")
+            statements.append("Interacciona con el sistema de archivos (lectura/escritura).")
         if has_any(["class ", "def "]):
-            statements.append("Defines functions/classes for reusable behavior.")
+            statements.append("Define funciones o clases para estructurar el comportamiento.")
         if has_any(["if __name__ == '__main__'", "main("]):
-            statements.append("Contains an entrypoint section for direct execution.")
+            statements.append("Incluye un punto de entrada para ejecución directa.")
 
         if len(statements) == 1:
-            statements.append("No specific behaviors detected beyond basic structure.")
+            statements.append("No se observan comportamientos específicos más allá de la estructura básica.")
 
         return " ".join(statements)
+
+    def _explanation_intent(self, objective: str) -> str:
+        text = objective.lower()
+        if any(k in text for k in ["readme", "documenta", "documentar", "documentacion", "documentación"]):
+            return "Explain the purpose and behavior for a reader new to the project."
+        if any(k in text for k in ["explica", "explícame", "describe", "que hace", "de que trata"]):
+            return "Explain what the code does in simple terms."
+        return "Summarize the inspected evidence in human language."
 
     def _gate_action_by_type(self, action: Action) -> Action:
         # INSPECT: allow only read; convert benign run->read when possible; avoid execution/ls
