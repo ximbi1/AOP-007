@@ -173,6 +173,7 @@ def test_create_script_prefers_code_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tools, "safe_write", fake_safe_write)
     monkeypatch.setattr(agent.IterativeAgent, "_generate_code_artifact", lambda self, target: "print('ok')\n")
+    monkeypatch.setattr(agent.IterativeAgent, "_ensure_semantic_synthesis", lambda self: None)
 
     ag = agent.IterativeAgent(
         root=tmp_path,

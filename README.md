@@ -15,6 +15,8 @@ This repository delivers a terminal-first development assistant inspired by Open
 - **Git-aware ergonomics**: status/diff helpers, commit/revert with confirmation.
 - **Composite goals handled safely**: multi-part instructions are split into independent sub-goals (inspect/read vs create/modify), each inferred, planned, executed, and evaluated in isolation; global success only when all sub-goals succeed.
 - **Semantic understanding as a first-class artifact**: per-file semantic summaries from INSPECT plus a repository-level behavior/purpose synthesis (one LLM call) feed documentation generation; no snippets or code execution required.
+- **Strict closing summaries**: final Key actions/Result sections are derived only from actual created/modified files, without invented artifacts or inferred documentation.
+- **Optional human explanation**: an extra Explanation section can be generated from verified summaries, while the factual sections remain deterministic.
 
 ## Quickstart
 
@@ -87,18 +89,30 @@ Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agen
 - **Documentation (CREATE_ARTIFACT)**: README/docs are drafted from semantic understanding (file summaries or repo-level synthesis) plus structural signals (languages, key/central files). No code snippets or speculative behavior; explicit note that no execution was performed.
 - **Events/UX**: real-time events for phase, intent, strategy, stop/success; final summary remains the authoritative report.
 
+```mermaid
+flowchart TD
+    A[Objective] --> B[Analysis]
+    B --> C[Plan]
+    C --> D[Action]
+    D --> E[Evaluation]
+    E -->|Success| F[Final Summary]
+    E -->|Needs changes| G[Correction]
+    G --> C
+```
+
 ## README generation for CREATE_ARTIFACT
 
 - Default README writes are auto-proposed when a create sub-goal lacks a plan; the target filename is inferred from the request (e.g., README.md).
 - Content is evidence-based: uses detected languages, key files, central files, semantic summaries (file-level) or synthesized repo understanding (behavior/purpose); scopes adapt to “single script” vs “repository” wording.
 - Language is honest and non-speculative (“based on inspected files”, “no execution performed”); no placeholders or invented behavior.
+- If the request is for a code artifact (script/tool/program), the code file is created first; documentation never substitutes the requested code.
 
 ## Real-time events (UX)
 
 - Concise console events: phases, intents, proposed/cancelled commands, strategy changes, stop/success recommendations.
 - Final summary remains as the authoritative report; events are informative, not reasoning dumps.
 - Sub-goals are announced with type and index (e.g., subobjetivo 2/2 - CREATE_ARTIFACT) to keep the flow traceable.
-- On successful completion, the CLI generates a human closing summary via a single LLM call (no internal terms, just what changed and why it matters).
+- On successful completion, the CLI emits a strict closing summary derived from recorded file actions.
 
 ## Output log
 

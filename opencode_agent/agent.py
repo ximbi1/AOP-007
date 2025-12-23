@@ -367,6 +367,7 @@ class IterativeAgent:
                 if self.objective_type == "CREATE_ARTIFACT":
                     if self._is_code_artifact(action.path) or self._matches_create_target(action.path):
                         self.create_code_written = True
+                        self.state.create_code_written = True
                 evaluation = f"write -> {message}"
                 return Attempt(
                     action=f"write {action.path}",
@@ -645,6 +646,15 @@ class IterativeAgent:
             self.create_requires_code = requires_code
             self.create_doc_requested = doc_requested
             self.create_primary_target = self._infer_create_target(tokens, requires_code, doc_requested)
+            self.state.create_requires_code = self.create_requires_code
+            self.state.create_doc_requested = self.create_doc_requested
+            self.state.create_primary_target = self.create_primary_target
+            self.state.create_code_written = False
+        else:
+            self.state.create_requires_code = False
+            self.state.create_doc_requested = False
+            self.state.create_primary_target = None
+            self.state.create_code_written = False
         self.state.plan = []
         self.state.evaluation = Evaluation()
         self._sub_files_created_base = len(self.state.files_created)
@@ -961,14 +971,32 @@ class IterativeAgent:
             statements.append("Solicita entrada del usuario por consola.")
         if has_any(["argparse", "sys.argv"]):
             statements.append("Lee argumentos de línea de comandos.")
+        if has_any(["click", "typer"]):
+            statements.append("Expone una interfaz de línea de comandos basada en comandos.")
+        if has_any(["subparsers", "add_argument"]):
+            statements.append("Define opciones o comandos CLI configurables.")
         if has_any(["requests", "http", "urllib", "fetch"]):
             statements.append("Incluye llamadas de red/HTTP explícitas.")
+        if has_any(["socket", "websocket"]):
+            statements.append("Trabaja con conexiones de red persistentes.")
         if has_any(["open(", "with open"]):
             statements.append("Abre archivos desde el sistema de archivos.")
         if has_any(["read(", "write("]):
             statements.append("Realiza operaciones de lectura/escritura en archivos.")
+        if has_any(["json", "yaml", "toml"]):
+            statements.append("Manipula datos en formatos estructurados (JSON/YAML/TOML).")
+        if has_any(["csv", "pandas"]):
+            statements.append("Procesa datos tabulares o CSV.")
+        if has_any(["sqlite", "postgres", "mysql", "sqlalchemy"]):
+            statements.append("Interacciona con bases de datos.")
         if has_any(["class ", "def "]):
             statements.append("Define funciones o clases reutilizables.")
+        if has_any(["async ", "await", "asyncio"]):
+            statements.append("Incluye lógica asíncrona.")
+        if has_any(["logging", "logger"]):
+            statements.append("Registra eventos o mensajes de ejecución.")
+        if has_any(["add", "subtract", "multiply", "divide", "calculator", "calculadora"]):
+            statements.append("Incluye operaciones aritméticas o lógica de calculadora.")
         if has_any(["if __name__ == '__main__'", "main("]):
             statements.append("Incluye un bloque de entrada para ejecución directa.")
 

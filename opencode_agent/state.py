@@ -34,6 +34,10 @@ class ProjectState:
     hypotheses: List[str] = field(default_factory=list)
     files_created: List[str] = field(default_factory=list)
     evaluation: Evaluation = field(default_factory=Evaluation)
+    create_requires_code: bool = False
+    create_code_written: bool = False
+    create_primary_target: str | None = None
+    create_doc_requested: bool = False
 
     # ------------------------------------------------------------------
     @classmethod
@@ -66,6 +70,10 @@ class ProjectState:
                 evidence=data.get("evaluation", {}).get("evidence", []),
                 rationale=data.get("evaluation", {}).get("rationale", ""),
             ),
+            create_requires_code=data.get("create_requires_code", False),
+            create_code_written=data.get("create_code_written", False),
+            create_primary_target=data.get("create_primary_target"),
+            create_doc_requested=data.get("create_doc_requested", False),
         )
 
     def save(self) -> None:
@@ -89,6 +97,10 @@ class ProjectState:
                 "evidence": self.evaluation.evidence[-20:],
                 "rationale": self.evaluation.rationale,
             },
+            "create_requires_code": self.create_requires_code,
+            "create_code_written": self.create_code_written,
+            "create_primary_target": self.create_primary_target,
+            "create_doc_requested": self.create_doc_requested,
         }
         path = self.root / STATE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)

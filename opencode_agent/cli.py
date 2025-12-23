@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import sys
 from cmd import Cmd
@@ -407,17 +408,10 @@ def _fallback_success_summary(
     lines.append("")
     lines.append("Result")
     if created:
-        if any(Path(name).name.lower().startswith("readme") for name in created):
-            lines.append("- A README is now present based on inspected evidence.")
-        else:
-            lines.append("- New artifacts are present in the workspace.")
-    if understanding:
-        behavior = understanding.get("behavior")
-        purpose = understanding.get("purpose")
-        if behavior:
-            lines.append(f"- Behavior: {behavior}")
-        if purpose:
-            lines.append(f"- Purpose: {purpose}")
+        for name in created:
+            lines.append(f"- File {Path(name).name} exists in the workspace.")
+    if modified and not created:
+        lines.append("- Updated files are now present in the workspace.")
     lines.append("- No runtime behavior was executed or modified.")
     lines.append("")
     lines.append("Constraints")
@@ -427,53 +421,206 @@ def _fallback_success_summary(
 
 
 def _render_success_summary(state: agent.ProjectState, objective: str, backend_manager: backend.BackendManager) -> str:
-    files_created = _dedupe_paths(state.files_created[-10:])
-    files_inspected = list(state.semantic_summaries.keys())[:5]
-    files_modified = _dedupe_paths(state.files_modified[-10:])
-    payload = {
-        "objective": objective,
-        "files_inspected": files_inspected,
-        "files_created": files_created,
-        "files_modified": files_modified,
-        "modification_summaries": state.modification_summaries,
-        "project_understanding_structured": state.project_understanding_structured,
-        "constraints": ["No execution performed", "Only inspected content"],
-        "format": "Done. <confirmation>\nKey actions\n- ...\nResult\n- ...",
+    return _render_success_summary_strict(state, objective, backend_manager)
+
+
+def _render_success_summary_strict(
+    state: agent.ProjectState,
+    objective: str,
+    backend_manager: backend.BackendManager,
+) -> str:
+    inspected = list(state.semantic_summaries.keys())[:5]
+    created = _dedupe_paths(state.files_created[-10:])
+    modified = _dedupe_paths(state.files_modified[-10:])
+    created_lower = {path.lower() for path in created}
+    modified = [path for path in modified if path.lower() not in created_lower]
+
+    lines = ["Done.", "", "Key actions"]
+    if inspected:
+        for name in inspected:
+            lines.append(f"- Inspected {Path(name).name}.")
+    if created:
+        for name in created:
+            lines.append(f"- Created {Path(name).name}.")
+    if modified:
+        for name in modified:
+            lines.append(f"- Modified {Path(name).name}.")
+    if not (inspected or created or modified):
+        lines.append("- No observable actions were recorded.")
+
+    lines.append("")
+    lines.append("Result")
+    result_lines = _build_result_lines(state, created, modified)
+    if result_lines:
+        lines.extend([f"- {line}" for line in result_lines])
+    else:
+        lines.append("- No observable file changes were recorded.")
+    explanation = _maybe_generate_explanation(state, created, modified, backend_manager)
+    if explanation:
+        lines.append("")
+        lines.append("Explanation")
+        lines.append(f"- {explanation}")
+    return "\n".join(lines)
+
+
+def _build_result_lines(state: agent.ProjectState, created: List[str], modified: List[str]) -> List[str]:
+    result_lines: List[str] = []
+    code_target = _select_code_target(created, state.create_primary_target)
+    readme_created = any(Path(path).name.lower() == "readme.md" for path in created)
+
+    if state.create_requires_code and code_target:
+        language = _language_from_extension(Path(code_target).suffix)
+        descriptor = f"{language} code file" if language else "Code file"
+        result_lines.append(f"{descriptor} `{Path(code_target).name}` is now present.")
+    elif created:
+        for path in created:
+            result_lines.append(f"File `{Path(path).name}` is now present.")
+
+    if readme_created and (state.create_doc_requested or not state.create_requires_code):
+        result_lines.append("Documentation file `README.md` is now present.")
+
+    if modified and not created:
+        result_lines.append("Updated files are now present with the latest changes.")
+    return result_lines
+
+
+def _select_code_target(created: List[str], primary_target: str | None) -> str | None:
+    if primary_target:
+        target_name = Path(primary_target).name.lower()
+        for path in created:
+            if Path(path).name.lower() == target_name:
+                return path
+    for path in created:
+        if _language_from_extension(Path(path).suffix):
+            return path
+    return None
+
+
+def _language_from_extension(ext: str) -> str | None:
+    mapping = {
+        ".py": "Python",
+        ".js": "JavaScript",
+        ".ts": "TypeScript",
+        ".tsx": "TypeScript",
+        ".sh": "Shell",
+        ".go": "Go",
+        ".rs": "Rust",
+        ".rb": "Ruby",
+        ".php": "PHP",
+        ".java": "Java",
+        ".cs": "C#",
     }
-    system = (
-        "You write the final closing report. Use only the provided evidence. "
-        "Never invent behavior or intent. Do not output JSON or internal keys. "
-        "Deduplicate file paths semantically (e.g., README.md vs readme.md). "
-        "Use concrete verbs: inspected, created, modified. "
-        "Result describes the final project state, not the process. "
-        "Always follow the exact structure: Done. <confirmation>\nKey actions\n- ...\nResult\n- ...\nConstraints (optional)"
-    )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
+    return mapping.get(ext.lower())
+
+
+def _maybe_generate_explanation(
+    state: agent.ProjectState,
+    created: List[str],
+    modified: List[str],
+    backend_manager: backend.BackendManager,
+) -> str | None:
+    semantic_payload = _build_explanation_payload(state, created, modified)
+    if not semantic_payload:
+        return None
+    allowed_files = semantic_payload.get("allowed_files", [])
     try:
         with backend_manager:
             response = backend.call_llama(
                 backend_manager.settings.base_url,
-                {"model": "local-model", "messages": messages, "temperature": 0.2},
+                {
+                    "model": "local-model",
+                    "messages": _build_explanation_messages(semantic_payload),
+                    "temperature": 0.2,
+                },
             )
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        summary = content.strip()
-        if summary and _summary_is_valid(summary, files_inspected, files_created, files_modified):
-            return summary
-        return _fallback_success_summary(
-            objective,
-            files_inspected,
-            files_created,
-            files_modified,
-            state.project_understanding_structured,
-        )
     except Exception:
-        return _fallback_success_summary(
-            objective,
-            files_inspected,
-            files_created,
-            files_modified,
-            state.project_understanding_structured,
-        )
+        return None
+    explanation = _sanitize_explanation(content)
+    return _validate_explanation(explanation, allowed_files, semantic_payload.get("readme_created", False))
+
+
+def _build_explanation_payload(
+    state: agent.ProjectState,
+    created: List[str],
+    modified: List[str],
+) -> dict | None:
+    if not (created or modified):
+        return None
+    summaries = {
+        name: summary
+        for name, summary in state.semantic_summaries.items()
+        if name in {Path(path).name for path in created + modified}
+    }
+    if not summaries and not state.project_understanding_structured:
+        return None
+    code_target = _select_code_target(created, state.create_primary_target)
+    return {
+        "created_files": [Path(path).name for path in created],
+        "modified_files": [Path(path).name for path in modified],
+        "primary_code_file": Path(code_target).name if code_target else None,
+        "language": _language_from_extension(Path(code_target).suffix) if code_target else None,
+        "semantic_summaries": summaries,
+        "project_understanding": state.project_understanding_structured,
+        "allowed_files": sorted({Path(path).name for path in created + modified}),
+        "readme_created": any(Path(path).name.lower() == "readme.md" for path in created),
+    }
+
+
+def _build_explanation_messages(payload: dict) -> List[dict]:
+    system = (
+        "Eres un narrador técnico en español. Explica el resultado en 1-2 frases claras y humanas. "
+        "Usa solo hechos explícitos del payload. "
+        "No inventes archivos ni funciones. No uses lenguaje especulativo. "
+        "No menciones archivos fuera de allowed_files."
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def _sanitize_explanation(content: str) -> str:
+    if not content:
+        return ""
+    text = content.strip()
+    if text.startswith("-"):
+        text = text.lstrip("- ")
+    return " ".join(text.split())
+
+
+def _validate_explanation(text: str, allowed_files: List[str], readme_created: bool) -> str | None:
+    if not text:
+        return None
+    lower = text.lower()
+    forbidden = [
+        "probablemente",
+        "podria",
+        "podría",
+        "quizá",
+        "quizas",
+        "maybe",
+        "perhaps",
+        "might",
+        "may ",
+        "could",
+        "would",
+        "posiblemente",
+    ]
+    if any(token in lower for token in forbidden):
+        return None
+    if "readme" in lower and not readme_created:
+        return None
+    if ("documentation" in lower or "documentación" in lower) and not readme_created:
+        return None
+    allowed_lower = {name.lower() for name in allowed_files}
+    mentioned = {
+        match.lower()
+        for match in re.findall(r"[\w./-]+\.(?:py|js|ts|tsx|sh|go|rs|rb|php|java|cs|md|txt)", text)
+    }
+    if any(name not in allowed_lower for name in mentioned):
+        return None
+    sentences = [s for s in re.split(r"[.!?]+", text) if s.strip()]
+    if len(sentences) > 2:
+        return None
+    return text
