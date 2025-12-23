@@ -100,6 +100,7 @@ class IterativeAgent:
         self._sub_objectives_text: List[str] = []
         self._last_inspected_name: Optional[str] = None
         self._last_inspected_snippet: Optional[str] = None
+        self.current_targets: List[str] = []
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
@@ -232,6 +233,17 @@ class IterativeAgent:
                     description=f"Leer {target.name}",
                     path=str(target.relative_to(self.root)),
                 )
+        if self.objective_type == "MODIFY" and not self.current_targets:
+            target = self._select_inspect_target()
+            if target:
+                return Action(
+                    kind="read",
+                    description=f"Leer {target.name} para identificar target",
+                    path=str(target.relative_to(self.root)),
+                )
+            return Action(kind="none", description="No target file specified for MODIFY")
+        if self.objective_type == "MODIFY" and not self.current_targets:
+            return Action(kind="none", description="No target file specified for MODIFY")
         messages = self.messages + [
             {
                 "role": "user",
@@ -359,6 +371,8 @@ class IterativeAgent:
                 summary = self._summarize_content(target.name, lines)
                 if summary:
                     self.state.semantic_summaries[target.name] = summary
+                if self.objective_type == "MODIFY" and not self.current_targets:
+                    self.current_targets = [str(target)]
                 desc = (
                     f"Read {action.path}; snippet:\n{snippet[:160]}" if snippet else f"Read {action.path}; content inspected"
                 )
@@ -543,6 +557,27 @@ class IterativeAgent:
             return "INSPECT"
         return "UNKNOWN"
 
+    def _infer_targets(self, objective: str, objective_type: str) -> List[str]:
+        tokens = objective.replace(",", " ").split()
+        targets = []
+        for tok in tokens:
+            if "." in tok:
+                candidate = self.root / tok
+                if candidate.exists() and candidate.is_file():
+                    targets.append(str(candidate))
+        if objective_type in {"INSPECT", "MODIFY"} and not targets:
+            single = self._single_relevant_file()
+            if single:
+                targets.append(str(single))
+        if objective_type == "CREATE_ARTIFACT" and not targets:
+            for tok in tokens:
+                if tok.lower().endswith(".md") or tok.lower().endswith(".txt"):
+                    targets.append(tok)
+                    break
+            if not targets:
+                targets.append("README.md")
+        return targets
+
     def _mentions_no_execute(self, objective: str) -> bool:
         text = objective.lower()
         terms = ["no lo ejecutes", "sin ejecutar", "solo lee", "no ejecutar", "do not run", "just read"]
@@ -555,6 +590,7 @@ class IterativeAgent:
         self.objective_type = self._infer_objective_type(raw_text)
         self.objective_scope_here = self._mentions_here(raw_text)
         self.no_execute_requested = self._mentions_no_execute(raw_text)
+        self.current_targets = self._infer_targets(raw_text, self.objective_type)
         self.state.plan = []
         self.state.evaluation = Evaluation()
         self._sub_files_created_base = len(self.state.files_created)
@@ -866,6 +902,13 @@ class IterativeAgent:
             if action.kind in {"read", "run"}:
                 return Action(kind="none", description="Esperando plan de escritura")
             return action
+        if self.objective_type == "MODIFY":
+            if action.kind != "write":
+                return Action(kind="none", description="Esperando modificación con escritura")
+            if action.path and self.current_targets:
+                target_names = {Path(t).name for t in self.current_targets}
+                if Path(action.path).name not in target_names:
+                    return Action(kind="none", description="Write target does not match MODIFY target")
         return action
 
 
