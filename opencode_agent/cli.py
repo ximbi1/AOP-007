@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import sys
@@ -27,8 +28,8 @@ class SessionState:
 
 
 class AssistantShell(Cmd):
-    intro = "OpenCode-style assistant shell. Type help or ? to list commands."
-    prompt = "omoc> "
+    intro = "Cortex Agent Shell. Type help or ? to list commands."
+    prompt = "cortex> "
 
     def __init__(self, state: SessionState):
         super().__init__()
@@ -226,7 +227,7 @@ class AssistantShell(Cmd):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Terminal AI dev assistant prototype")
+    parser = argparse.ArgumentParser(description="Cortex Agent Shell CLI")
     parser.add_argument("--yes", action="store_true", help="assume yes for confirmations")
     sub = parser.add_subparsers(dest="command")
 
@@ -254,7 +255,8 @@ def main(argv: List[str] | None = None) -> int:
 
     if args.command == "interactive":
         state.root = Path(args.path).resolve()
-        AssistantShell(state).cmdloop()
+        with OutputLogger(state.root / "outputlog.txt"):
+            AssistantShell(state).cmdloop()
         return 0
     if args.command == "analyze":
         report = analyzer.analyze_workspace(args.path)
@@ -267,14 +269,18 @@ def main(argv: List[str] | None = None) -> int:
         return 0
     if args.command == "agent":
         sink = ConsoleEventSink()
-        runner = agent.IterativeAgent(
-            root=state.root,
-            backend_manager=state.backend_manager,
-            confirm_cfg=confirm_cfg,
-            event_sink=sink,
-        )
-        result = runner.run(args.objective, max_attempts=args.max_attempts)
-        print(result.summary())
+        with OutputLogger(state.root / "outputlog.txt"):
+            runner = agent.IterativeAgent(
+                root=state.root,
+                backend_manager=state.backend_manager,
+                confirm_cfg=confirm_cfg,
+                event_sink=sink,
+            )
+            result = runner.run(args.objective, max_attempts=args.max_attempts)
+            if result.evaluation.status == "SUCCESS":
+                print(_render_success_summary(result, args.objective, state.backend_manager))
+            else:
+                print(result.summary())
         return 0
 
     parser.print_help()
@@ -288,13 +294,89 @@ if __name__ == "__main__":
 class ConsoleEventSink:
     def emit(self, event: str, message: str) -> None:
         labels = {
-            "phase_changed": "[fase]",
-            "intention_set": "[intención]",
-            "command_proposed": "[comando]",
-            "command_cancelled": "[cancelado]",
-            "strategy_changed": "[estrategia]",
-            "stopping_recommended": "[detener]",
-            "success_detected": "[éxito]",
+            "phase_changed": ("[phase]", "\033[34m"),
+            "intention_set": ("[intent]", "\033[36m"),
+            "command_proposed": ("[action]", "\033[33m"),
+            "command_cancelled": ("[cancelled]", "\033[31m"),
+            "strategy_changed": ("[strategy]", "\033[35m"),
+            "stopping_recommended": ("[stop]", "\033[35m"),
+            "success_detected": ("[success]", "\033[32m"),
         }
-        prefix = labels.get(event, "[evento]")
-        print(f"{prefix} {message}")
+        label, color = labels.get(event, ("[event]", ""))
+        if _use_color():
+            print(f"{color}{label}\033[0m {message}")
+        else:
+            print(f"{label} {message}")
+
+
+class OutputLogger:
+    def __init__(self, path: Path):
+        self.path = path
+        self._file = None
+        self._stdout = None
+        self._stderr = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("a", encoding="utf-8")
+        self._stdout = sys.stdout
+        self._stderr = sys.stderr
+        sys.stdout = _Tee(self._stdout, self._file)
+        sys.stderr = _Tee(self._stderr, self._file)
+        self._file.write("\n=== Cortex Agent Session Start ===\n")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._file:
+            self._file.write("=== Cortex Agent Session End ===\n")
+            self._file.flush()
+        if self._stdout:
+            sys.stdout = self._stdout
+        if self._stderr:
+            sys.stderr = self._stderr
+        if self._file:
+            self._file.close()
+
+
+class _Tee:
+    def __init__(self, primary, secondary):
+        self.primary = primary
+        self.secondary = secondary
+
+    def write(self, data):
+        self.primary.write(data)
+        self.secondary.write(data)
+
+    def flush(self):
+        self.primary.flush()
+        self.secondary.flush()
+
+
+def _use_color() -> bool:
+    return sys.stdout.isatty() and not os.getenv("NO_COLOR")
+
+
+def _render_success_summary(state: agent.ProjectState, objective: str, backend_manager: backend.BackendManager) -> str:
+    payload = {
+        "objective": objective,
+        "project_understanding": state.project_understanding,
+        "project_understanding_structured": state.project_understanding_structured,
+        "files_created": state.files_created[-5:],
+        "notes": "Use human, concise language. Avoid internal terms."
+    }
+    system = (
+        "You are a concise professional assistant. Write a short, human closing summary for a successful task. "
+        "Use this structure: 'Done. <confirmation>'. Then 'Key changes' bullets and 'Result' bullets. "
+        "Do not mention internal agent terms or diagnostics."
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    try:
+        with backend_manager:
+            response = backend.call_llama(backend_manager.settings.base_url, {"model": "local-model", "messages": messages, "temperature": 0.2})
+        content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return content.strip() or "Done. Task completed successfully."
+    except Exception:
+        return "Done. Task completed successfully."

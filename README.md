@@ -1,11 +1,12 @@
 # AI-assisted Development CLI (Prototype)
 
-This repository delivers a terminal-first development assistant inspired by OpenCode. It understands your workspace, plans with you, executes cautiously, streams concise status, and keeps a traceable memory—always prioritizing safety, humility, and human control.
+This repository delivers a terminal-first development assistant inspired by OpenCode. It understands your workspace, plans with you, executes cautiously, streams concise status, and keeps a traceable memory—always prioritizing safety, humility, and human control. The interactive CLI is branded as **Cortex Agent Shell**.
 
 ## Why it stands out
 
 - **Structured agent loop**: objective → plan → action → evaluation → correction, with explicit attempts and bounded retries.
 - **Real-time observability**: console events for phase changes, intent summaries, proposed/cancelled commands, strategy shifts, stop/success notices—never exposing chain-of-thought.
+- **Persistent output log**: every console line is duplicated into `outputlog.txt` with start/end markers for auditing and debugging.
 - **Persistent lightweight memory**: `ProjectState` snapshots languages, structural hints, key files, decisions, hypotheses, created files, and evaluations in `.opencode/state.json` for continuity.
 - **Heuristic semantic understanding**: strong-evidence framework detection (entry/config/bootstrap + deps), low-confidence hints for weak signals, import-centrality to surface likely core files, and strict filtering of noise (.git, __pycache__, venvs, node_modules, build artifacts, compiled extensions).
 - **Goal-aware evaluation**: creation goals are marked SUCCESS when artifacts are written; no forced execution. Observables only (stdout/stderr, exit codes, file changes, tests).
@@ -21,7 +22,7 @@ This repository delivers a terminal-first development assistant inspired by Open
 # Help
 python -m opencode_agent.cli --help
 
-# Interactive REPL
+# Interactive REPL (Cortex Agent Shell)
 python -m opencode_agent.cli interactive
 
 # Analyze current workspace (read-only)
@@ -97,6 +98,13 @@ Interactive mode exposes `list`, `read`, `search`, `write`, `plan`, `run`, `agen
 - Concise console events: phases, intents, proposed/cancelled commands, strategy changes, stop/success recommendations.
 - Final summary remains as the authoritative report; events are informative, not reasoning dumps.
 - Sub-goals are announced with type and index (e.g., subobjetivo 2/2 - CREATE_ARTIFACT) to keep the flow traceable.
+- On successful completion, the CLI generates a human closing summary via a single LLM call (no internal terms, just what changed and why it matters).
+
+## Output log
+
+- All CLI output is mirrored to `outputlog.txt` in the current working directory.
+- The log includes `=== Cortex Agent Session Start ===` and `=== Cortex Agent Session End ===` markers.
+- Useful for traceability, debugging, and reviewing agent actions after the fact.
 
 ## Safety & behavioral tests
 

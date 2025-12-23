@@ -85,12 +85,30 @@ def _render_diff(path: Path, new_content: str) -> str:
     return "".join(diff_lines)
 
 
+def _colorize_diff(diff_text: str) -> str:
+    if not diff_text:
+        return diff_text
+    if os.getenv("NO_COLOR") or not sys.stdout.isatty():
+        return diff_text
+    colored = []
+    for line in diff_text.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            colored.append(f"\033[32m{line}\033[0m")
+        elif line.startswith("-") and not line.startswith("---"):
+            colored.append(f"\033[31m{line}\033[0m")
+        elif line.startswith("@@"):
+            colored.append(f"\033[36m{line}\033[0m")
+        else:
+            colored.append(f"\033[90m{line}\033[0m")
+    return "\n".join(colored) + "\n"
+
+
 def safe_write(path: str, content: str, cfg: ConfirmConfig) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     diff_text = _render_diff(target, content)
     if diff_text:
-        print(diff_text)
+        print(_colorize_diff(diff_text))
     else:
         print(f"No changes detected for {path}")
     if not confirm(f"Apply changes to {path}?", cfg):
