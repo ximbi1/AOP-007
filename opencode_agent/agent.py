@@ -220,7 +220,7 @@ class IterativeAgent:
             "Responde JSON con la clave action. Prioriza comandos pequeños y lecturas antes de escribir."
         )
         if self.objective_type == "INSPECT" and attempt_no == 1:
-            target = self._single_relevant_file()
+            target = self._select_inspect_target()
             if target:
                 return Action(
                     kind="read",
@@ -603,6 +603,20 @@ class IterativeAgent:
             return candidates[0]
         return None
 
+    def _select_inspect_target(self) -> Optional[Path]:
+        text = self.current_objective.lower()
+        tokens = text.replace(",", " ").split()
+        for tok in tokens:
+            if "." in tok:
+                candidate = self.root / tok
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+        if "script" in tokens or "script" in text:
+            for item in self.root.iterdir():
+                if item.is_file() and "script" in item.name.lower():
+                    return item
+        return self._single_relevant_file()
+
     def _default_create_action(self) -> Action:
         target = "README.md"
         text = self.current_objective.lower()
@@ -717,10 +731,10 @@ class IterativeAgent:
             "constraints": ["No execution performed", "Only inspected content"],
         }
         system = (
-            "You are a semantic summarizer for documentation readers. Produce a concise, human explanation with two parts: "
-            "Behavior (what it does, observable actions) and Purpose (probable role/utility). "
-            "Use plain, human language and avoid internal analysis jargon. Base everything strictly on the provided evidence. "
-            "Do not include code snippets or speculate beyond evidence. Return JSON with keys 'behavior' and 'purpose' when possible."
+            "Eres un sintetizador semántico para documentación humana. Devuelve JSON con claves 'behavior' y 'purpose'. "
+            "Behavior: solo acciones observables directamente en el contenido inspeccionado (sin suposiciones). "
+            "Purpose: hipótesis prudente usando lenguaje suave ('puede servir para', 'parece pensado para') y sin introducir acciones nuevas. "
+            "No uses jerga interna, no incluyas snippets ni detalles forenses. Basado estrictamente en la evidencia." 
         )
         messages = [
             {"role": "system", "content": system},
@@ -755,35 +769,35 @@ class IterativeAgent:
         if not lines:
             return "No observable content (empty read)."
         text = "\n".join(lines[:200]).lower()
-        line_count = len(lines)
         statements: List[str] = []
         statements.append(
-            f"Este archivo (`{name}`) tiene aproximadamente {line_count} líneas inspeccionadas. "
-            "La explicación se basa solo en la lectura del texto; no se ejecutó código."
+            f"Este archivo (`{name}`) fue leído de forma estática; la explicación se basa solo en el texto, sin ejecución."
         )
 
         def has_any(tokens):
             return any(tok in text for tok in tokens)
 
-        if has_any(["datetime", "time"]):
-            statements.append("Parece trabajar con fechas u horas y mostrarlas por consola.")
         if has_any(["print"]):
-            statements.append("Imprime información en la salida estándar.")
+            statements.append("Imprime información en la consola.")
+        if has_any(["datetime", "time"]):
+            statements.append("Usa utilidades de fecha y hora.")
         if has_any(["input("]):
-            statements.append("Solicita entrada del usuario en la consola.")
+            statements.append("Solicita entrada del usuario por consola.")
         if has_any(["argparse", "sys.argv"]):
-            statements.append("Acepta argumentos de línea de comandos.")
+            statements.append("Lee argumentos de línea de comandos.")
         if has_any(["requests", "http", "urllib", "fetch"]):
-            statements.append("Realiza llamadas de red o peticiones HTTP.")
-        if has_any(["open(", "with open", "read(", "write("]):
-            statements.append("Interacciona con el sistema de archivos (lectura/escritura).")
+            statements.append("Incluye llamadas de red/HTTP explícitas.")
+        if has_any(["open(", "with open"]):
+            statements.append("Abre archivos desde el sistema de archivos.")
+        if has_any(["read(", "write("]):
+            statements.append("Realiza operaciones de lectura/escritura en archivos.")
         if has_any(["class ", "def "]):
-            statements.append("Define funciones o clases para estructurar el comportamiento.")
+            statements.append("Define funciones o clases reutilizables.")
         if has_any(["if __name__ == '__main__'", "main("]):
-            statements.append("Incluye un punto de entrada para ejecución directa.")
+            statements.append("Incluye un bloque de entrada para ejecución directa.")
 
         if len(statements) == 1:
-            statements.append("No se observan comportamientos específicos más allá de la estructura básica.")
+            statements.append("No se observan acciones explícitas más allá de la estructura básica.")
 
         return " ".join(statements)
 

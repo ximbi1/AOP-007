@@ -74,7 +74,10 @@ class AssistantShell(Cmd):
         )
         try:
             state = runner.run(objective, max_attempts=max_attempts)
-            print(state.summary())
+            if state.evaluation.status == "SUCCESS":
+                print(_render_success_summary(state, objective, self.state.backend_manager))
+            else:
+                print(state.summary())
         except Exception as exc:  # noqa: BLE001
             print(f"agent run failed: {exc}")
 
@@ -351,23 +354,30 @@ class _Tee:
         self.primary.flush()
         self.secondary.flush()
 
+    def isatty(self):
+        return bool(getattr(self.primary, "isatty", lambda: False)())
+
 
 def _use_color() -> bool:
     return sys.stdout.isatty() and not os.getenv("NO_COLOR")
 
 
 def _render_success_summary(state: agent.ProjectState, objective: str, backend_manager: backend.BackendManager) -> str:
+    files_created = state.files_created[-5:]
+    files_inspected = list(state.semantic_summaries.keys())[:5]
     payload = {
         "objective": objective,
-        "project_understanding": state.project_understanding,
+        "files_inspected": files_inspected,
+        "files_created": files_created,
+        "files_modified": [],
         "project_understanding_structured": state.project_understanding_structured,
-        "files_created": state.files_created[-5:],
-        "notes": "Use human, concise language. Avoid internal terms."
+        "constraints": ["No execution performed", "Only inspected content"],
+        "format": "Done. <confirmation>\nKey actions\n- ...\nResult\n- ...",
     }
     system = (
-        "You are a concise professional assistant. Write a short, human closing summary for a successful task. "
-        "Use this structure: 'Done. <confirmation>'. Then 'Key changes' bullets and 'Result' bullets. "
-        "Do not mention internal agent terms or diagnostics."
+        "You write the final human summary. Use only the provided evidence. "
+        "Never invent actions. Do not output JSON or internal keys. "
+        "Always follow the exact structure: Done. <confirmation>\nKey actions\n- ...\nResult\n- ..."
     )
     messages = [
         {"role": "system", "content": system},
@@ -375,7 +385,10 @@ def _render_success_summary(state: agent.ProjectState, objective: str, backend_m
     ]
     try:
         with backend_manager:
-            response = backend.call_llama(backend_manager.settings.base_url, {"model": "local-model", "messages": messages, "temperature": 0.2})
+            response = backend.call_llama(
+                backend_manager.settings.base_url,
+                {"model": "local-model", "messages": messages, "temperature": 0.2},
+            )
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
         return content.strip() or "Done. Task completed successfully."
     except Exception:
