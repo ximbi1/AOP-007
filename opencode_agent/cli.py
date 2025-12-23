@@ -362,22 +362,91 @@ def _use_color() -> bool:
     return sys.stdout.isatty() and not os.getenv("NO_COLOR")
 
 
+def _dedupe_paths(paths: List[str]) -> List[str]:
+    seen = {}
+    for path in paths:
+        key = path.lower()
+        if key not in seen:
+            seen[key] = path
+    return list(seen.values())
+
+
+def _summary_is_valid(summary: str, inspected: List[str], created: List[str], modified: List[str]) -> bool:
+    lower = summary.lower()
+    if "{" in summary or "}" in summary:
+        return False
+    if "modified" in lower and not modified:
+        return False
+    if "created" in lower and not created:
+        return False
+    if "inspected" in lower and not inspected:
+        return False
+    return True
+
+
+def _fallback_success_summary(
+    objective: str,
+    inspected: List[str],
+    created: List[str],
+    modified: List[str],
+    understanding: dict,
+) -> str:
+    lines = ["Done.", "", "Key actions"]
+    if inspected:
+        for name in inspected:
+            lines.append(f"- Inspected {Path(name).name}.")
+    if created:
+        for name in created:
+            lines.append(f"- Created {Path(name).name}.")
+    if modified:
+        for name in modified:
+            lines.append(f"- Modified {Path(name).name}.")
+    if not (inspected or created or modified):
+        lines.append("- No observable actions were recorded.")
+
+    lines.append("")
+    lines.append("Result")
+    if created:
+        if any(Path(name).name.lower().startswith("readme") for name in created):
+            lines.append("- A README is now present based on inspected evidence.")
+        else:
+            lines.append("- New artifacts are present in the workspace.")
+    if understanding:
+        behavior = understanding.get("behavior")
+        purpose = understanding.get("purpose")
+        if behavior:
+            lines.append(f"- Behavior: {behavior}")
+        if purpose:
+            lines.append(f"- Purpose: {purpose}")
+    lines.append("- No runtime behavior was executed or modified.")
+    lines.append("")
+    lines.append("Constraints")
+    lines.append("- No execution performed.")
+    lines.append("- Based on inspected content only.")
+    return "\n".join(lines)
+
+
 def _render_success_summary(state: agent.ProjectState, objective: str, backend_manager: backend.BackendManager) -> str:
-    files_created = state.files_created[-5:]
+    files_created = _dedupe_paths(state.files_created[-10:])
     files_inspected = list(state.semantic_summaries.keys())[:5]
+    files_modified = _dedupe_paths(state.files_modified[-10:])
     payload = {
         "objective": objective,
         "files_inspected": files_inspected,
         "files_created": files_created,
-        "files_modified": [],
+        "files_modified": files_modified,
+        "modification_summaries": state.modification_summaries,
         "project_understanding_structured": state.project_understanding_structured,
         "constraints": ["No execution performed", "Only inspected content"],
         "format": "Done. <confirmation>\nKey actions\n- ...\nResult\n- ...",
     }
     system = (
-        "You write the final human summary. Use only the provided evidence. "
-        "Never invent actions. Do not output JSON or internal keys. "
-        "Always follow the exact structure: Done. <confirmation>\nKey actions\n- ...\nResult\n- ..."
+        "You write the final closing report. Use only the provided evidence. "
+        "Never invent behavior or intent. Do not output JSON or internal keys. "
+        "Deduplicate file paths semantically (e.g., README.md vs readme.md). "
+        "Use concrete verbs: inspected, created, modified. "
+        "Result describes the final project state, not the process. "
+        "Always follow the exact structure: Done. <confirmation>\nKey actions\n- ...\nResult\n- ...\nConstraints (optional)"
     )
     messages = [
         {"role": "system", "content": system},
@@ -390,6 +459,21 @@ def _render_success_summary(state: agent.ProjectState, objective: str, backend_m
                 {"model": "local-model", "messages": messages, "temperature": 0.2},
             )
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return content.strip() or "Done. Task completed successfully."
+        summary = content.strip()
+        if summary and _summary_is_valid(summary, files_inspected, files_created, files_modified):
+            return summary
+        return _fallback_success_summary(
+            objective,
+            files_inspected,
+            files_created,
+            files_modified,
+            state.project_understanding_structured,
+        )
     except Exception:
-        return "Done. Task completed successfully."
+        return _fallback_success_summary(
+            objective,
+            files_inspected,
+            files_created,
+            files_modified,
+            state.project_understanding_structured,
+        )

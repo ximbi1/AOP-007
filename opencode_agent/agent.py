@@ -39,7 +39,10 @@ class Action:
         content = data.get("content")
         command_val = data.get("command")
         if isinstance(command_val, str):
-            command = shlex.split(command_val)
+            try:
+                command = shlex.split(command_val)
+            except ValueError:
+                command = [command_val]
         elif isinstance(command_val, list):
             command = [str(x) for x in command_val]
         else:
@@ -108,6 +111,8 @@ class IterativeAgent:
         self.state.semantic_summaries.clear()
         self.state.project_understanding = ""
         self.state.project_understanding_structured = {}
+        self.state.files_modified = []
+        self.state.modification_summaries = {}
         analysis = analyzer.analyze_workspace(str(self.root))
         self.state.update_from_report(analysis)
         self.state.add_decision(f"Objetivo: {objective}")
@@ -326,8 +331,10 @@ class IterativeAgent:
         if action.kind == "write" and action.path and action.content is not None:
             try:
                 self._emit("command_proposed", f"Escribir: {action.path}")
-                message = tools.safe_write(str(Path(self.root, action.path)), action.content, self.confirm_cfg)
+                message, diff_text = tools.safe_write(str(Path(self.root, action.path)), action.content, self.confirm_cfg)
                 self.state.record_file(action.path)
+                if diff_text:
+                    self._record_modification(action.path, diff_text)
                 evaluation = f"write -> {message}"
                 return Attempt(
                     action=f"write {action.path}",
@@ -557,7 +564,8 @@ class IterativeAgent:
             self.state.semantic_summaries.clear()
             self.state.project_understanding = ""
             self.state.project_understanding_structured = {}
-            self.state.project_understanding = ""
+            self.state.files_modified = []
+            self.state.modification_summaries = {}
 
     def _parse_sub_objectives(self, objective: str) -> List[str]:
         text = objective.replace(";", " y ")
@@ -800,6 +808,36 @@ class IterativeAgent:
             statements.append("No se observan acciones explícitas más allá de la estructura básica.")
 
         return " ".join(statements)
+
+    def _record_modification(self, path: str, diff_text: str) -> None:
+        if not diff_text.strip():
+            return
+        normalized = path
+        if normalized not in self.state.files_modified:
+            self.state.files_modified.append(normalized)
+        summary = self._summarize_diff(path, diff_text)
+        if summary:
+            self.state.modification_summaries[normalized] = summary
+
+    def _summarize_diff(self, path: str, diff_text: str) -> str:
+        added = []
+        removed = []
+        for line in diff_text.splitlines():
+            if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+                continue
+            if line.startswith("+"):
+                added.append(line[1:].strip())
+            elif line.startswith("-"):
+                removed.append(line[1:].strip())
+        if not added and not removed:
+            return ""
+        focus = f"Updated {Path(path).name}. "
+        detail = []
+        if added:
+            detail.append(f"Added {len(added)} line(s)")
+        if removed:
+            detail.append(f"Removed {len(removed)} line(s)")
+        return focus + ", ".join(detail) + "."
 
     def _explanation_intent(self, objective: str) -> str:
         text = objective.lower()

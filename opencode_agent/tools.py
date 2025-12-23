@@ -103,7 +103,7 @@ def _colorize_diff(diff_text: str) -> str:
     return "\n".join(colored) + "\n"
 
 
-def safe_write(path: str, content: str, cfg: ConfirmConfig) -> str:
+def safe_write(path: str, content: str, cfg: ConfirmConfig) -> tuple[str, str]:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     diff_text = _render_diff(target, content)
@@ -112,10 +112,10 @@ def safe_write(path: str, content: str, cfg: ConfirmConfig) -> str:
     else:
         print(f"No changes detected for {path}")
     if not confirm(f"Apply changes to {path}?", cfg):
-        return "write cancelled"
+        return "write cancelled", diff_text
     with target.open("w", encoding="utf-8") as fh:
         fh.write(content)
-    return f"Wrote {path}"
+    return f"Wrote {path}", diff_text
 
 
 def run_command(cmd: List[str], cfg: ConfirmConfig, cwd: Optional[str] = None) -> subprocess.CompletedProcess:

@@ -32,7 +32,7 @@ def test_safe_write_requires_confirmation(monkeypatch, tmp_path):
         return False
 
     monkeypatch.setattr(tools, "confirm", deny)
-    result = tools.safe_write(str(target), "content", tools.ConfirmConfig(assume_yes=False))
+    result, _ = tools.safe_write(str(target), "content", tools.ConfirmConfig(assume_yes=False))
     assert result == "write cancelled"
     assert not target.exists()
 

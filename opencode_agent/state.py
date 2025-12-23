@@ -27,6 +27,8 @@ class ProjectState:
     semantic_summaries: Dict[str, str] = field(default_factory=dict)
     project_understanding: str = ""
     project_understanding_structured: Dict[str, str] = field(default_factory=dict)
+    files_modified: List[str] = field(default_factory=list)
+    modification_summaries: Dict[str, str] = field(default_factory=dict)
     plan: List[str] = field(default_factory=list)
     decisions: List[str] = field(default_factory=list)
     hypotheses: List[str] = field(default_factory=list)
@@ -53,6 +55,8 @@ class ProjectState:
             semantic_summaries=data.get("semantic_summaries", {}),
             project_understanding=data.get("project_understanding", ""),
             project_understanding_structured=data.get("project_understanding_structured", {}),
+            files_modified=data.get("files_modified", []),
+            modification_summaries=data.get("modification_summaries", {}),
             decisions=data.get("decisions", []),
             hypotheses=data.get("hypotheses", []),
             files_created=data.get("files_created", []),
@@ -74,6 +78,8 @@ class ProjectState:
             "semantic_summaries": self.semantic_summaries,
             "project_understanding": self.project_understanding,
             "project_understanding_structured": self.project_understanding_structured,
+            "files_modified": self.files_modified,
+            "modification_summaries": self.modification_summaries,
             "decisions": self.decisions[-50:],
             "hypotheses": self.hypotheses[-50:],
             "files_created": self.files_created[-100:],
@@ -136,6 +142,9 @@ class ProjectState:
                     parts.append(f"- Comportamiento: {b[:140]}...")
                 if p:
                     parts.append(f"- Propósito: {p[:140]}...")
+        if self.files_modified:
+            parts.append("Archivos modificados:")
+            parts.extend([f"- {path}" for path in self.files_modified[-5:]])
         if self.directories:
             parts.append("Estructura (niveles superiores):")
             parts.extend([f"- {d}" for d in self.directories[:15]])
