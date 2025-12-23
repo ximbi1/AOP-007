@@ -156,3 +156,31 @@ def test_composite_inference_prefers_create_over_inspect(tmp_path):
     second_type = ag._infer_objective_type(sub_objs[1])
     assert first_type == "INSPECT"
     assert second_type == "CREATE_ARTIFACT"
+
+
+def test_create_script_prefers_code_file(monkeypatch, tmp_path):
+    responses = [
+        json.dumps({"plan": ["crear script"], "hypotheses": []}),
+        json.dumps({"action": {"type": "write", "path": "README.md", "content": "doc", "reason": "doc"}}),
+    ]
+    call_llama, _ = llm_stub(responses)
+    monkeypatch.setattr(agent.backend, "call_llama", call_llama)
+
+    def fake_safe_write(path, content, cfg):  # noqa: ARG001
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(content, encoding="utf-8")
+        return "Wrote", ""
+
+    monkeypatch.setattr(tools, "safe_write", fake_safe_write)
+    monkeypatch.setattr(agent.IterativeAgent, "_generate_code_artifact", lambda self, target: "print('ok')\n")
+
+    ag = agent.IterativeAgent(
+        root=tmp_path,
+        backend_manager=DummyBackend(),
+        confirm_cfg=tools.ConfirmConfig(assume_yes=True),
+    )
+    state = ag.run("crea un script en python que sea una calculadora", max_attempts=1)
+
+    assert state.evaluation.status == "SUCCESS"
+    assert (tmp_path / "script.py").exists()
+    assert not (tmp_path / "README.md").exists()

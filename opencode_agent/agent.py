@@ -101,6 +101,12 @@ class IterativeAgent:
         self._last_inspected_name: Optional[str] = None
         self._last_inspected_snippet: Optional[str] = None
         self.current_targets: List[str] = []
+        self.modification_proposed: bool = False
+        self.modification_approved: bool = False
+        self.create_requires_code: bool = False
+        self.create_primary_target: Optional[str] = None
+        self.create_code_written: bool = False
+        self.create_doc_requested: bool = False
 
     # ------------------------------------------------------------------
     def run(self, objective: str, max_attempts: int = 3) -> ProjectState:
@@ -150,6 +156,8 @@ class IterativeAgent:
                     self.state.evaluation = evaluation
                     self.state.add_decision(f"Intento {attempt_no}: {result.evaluation}")
                     self.state.save()
+                    if self.objective_type == "MODIFY" and any("PROPOSAL_ACTION" in ev for ev in result.evidence):
+                        continue
                     if evaluation.status == "SUCCESS":
                         sub_success = True
                         break
@@ -242,8 +250,17 @@ class IterativeAgent:
                     path=str(target.relative_to(self.root)),
                 )
             return Action(kind="none", description="No target file specified for MODIFY")
-        if self.objective_type == "MODIFY" and not self.current_targets:
-            return Action(kind="none", description="No target file specified for MODIFY")
+        if self.objective_type == "MODIFY" and not self.modification_proposed:
+            proposal = self._propose_modification()
+            if proposal:
+                return Action(kind="propose", description="Propose modifications", content=proposal)
+        if self.objective_type == "MODIFY" and self.modification_proposed and not self.modification_approved:
+            if not self._request_modify_approval():
+                return Action(kind="none", description="Modification not approved")
+        if self.objective_type == "MODIFY" and self.modification_proposed and self.modification_approved:
+            write_action = self._apply_approved_modification()
+            if write_action:
+                return write_action
         messages = self.messages + [
             {
                 "role": "user",
@@ -347,6 +364,9 @@ class IterativeAgent:
                 self.state.record_file(action.path)
                 if diff_text:
                     self._record_modification(action.path, diff_text)
+                if self.objective_type == "CREATE_ARTIFACT":
+                    if self._is_code_artifact(action.path) or self._matches_create_target(action.path):
+                        self.create_code_written = True
                 evaluation = f"write -> {message}"
                 return Attempt(
                     action=f"write {action.path}",
@@ -391,6 +411,16 @@ class IterativeAgent:
                     evaluation=str(exc),
                     status="FAILURE",
                 )
+        if action.kind == "propose" and action.content:
+            self.modification_proposed = True
+            target_label = self.current_targets[0] if self.current_targets else "unknown target"
+            self.state.modification_summaries[target_label] = action.content
+            return Attempt(
+                action="propose modification",
+                evaluation="Propuesta de modificación generada",
+                status="PARTIAL",
+                evidence=["PROPOSAL_ACTION"],
+            )
         return Attempt(
             action=action.description or action.kind,
             evaluation="sin acción ejecutada",
@@ -439,18 +469,31 @@ class IterativeAgent:
         elif self.objective_type == "CREATE_ARTIFACT" and status != "FAILURE":
             artifact_signal = False
             new_files = self.state.files_created[self._sub_files_created_base :]
-            if new_files:
+            if self.create_requires_code:
+                if self._has_created_code_file(new_files):
+                    artifact_signal = True
+                    evidence.append(f"Archivos de código creados: {', '.join(new_files[-3:])}")
+                else:
+                    status = "PARTIAL" if status != "FAILURE" else status
+                    if new_files:
+                        evidence.append(f"Archivos creados sin código: {', '.join(new_files[-3:])}")
+                    evidence.append("Falta un archivo de código para cumplir el objetivo")
+            elif new_files:
                 artifact_signal = True
                 evidence.append(f"Archivos creados: {', '.join(new_files[-3:])}")
             if attempt.action.startswith("write") or "WRITE_ACTION" in " ".join(evidence):
-                artifact_signal = True
-                evidence.append("Acción de escritura realizada")
+                if not self.create_requires_code or self.create_code_written:
+                    artifact_signal = True
+                    evidence.append("Acción de escritura realizada")
             if artifact_signal:
                 status = "SUCCESS"
                 evidence.append("Objetivo de creación cumplido (artefacto generado)")
             else:
                 status = "PARTIAL" if status != "FAILURE" else status
-                evidence.append("Sin evidencia de escritura; creación pendiente")
+                if attempt.action.startswith("write") or "WRITE_ACTION" in " ".join(evidence):
+                    evidence.append("Escritura realizada, pero falta el archivo solicitado")
+                else:
+                    evidence.append("Sin evidencia de escritura; creación pendiente")
         if attempt.status == "SUCCESS":
             if "test" in attempt.action.lower():
                 status = "SUCCESS"
@@ -591,6 +634,17 @@ class IterativeAgent:
         self.objective_scope_here = self._mentions_here(raw_text)
         self.no_execute_requested = self._mentions_no_execute(raw_text)
         self.current_targets = self._infer_targets(raw_text, self.objective_type)
+        self.modification_proposed = False
+        self.modification_approved = False
+        self.create_requires_code = False
+        self.create_primary_target = None
+        self.create_code_written = False
+        self.create_doc_requested = False
+        if self.objective_type == "CREATE_ARTIFACT":
+            requires_code, doc_requested, tokens = self._infer_create_context(raw_text)
+            self.create_requires_code = requires_code
+            self.create_doc_requested = doc_requested
+            self.create_primary_target = self._infer_create_target(tokens, requires_code, doc_requested)
         self.state.plan = []
         self.state.evaluation = Evaluation()
         self._sub_files_created_base = len(self.state.files_created)
@@ -662,13 +716,9 @@ class IterativeAgent:
         return self._single_relevant_file()
 
     def _default_create_action(self) -> Action:
-        target = "README.md"
         text = self.current_objective.lower()
-        tokens = text.replace(",", " ").split()
-        for tok in tokens:
-            if tok.endswith(".md") or tok.endswith(".txt"):
-                target = tok
-                break
+        requires_code, doc_requested, tokens = self._infer_create_context(text)
+        target = self.create_primary_target or self._infer_create_target(tokens, requires_code, doc_requested)
         file_scope_tokens = {"script", "archivo", "fichero", "file"}
         file_exts = {".py", ".sh", ".js", ".ts", ".go", ".rs"}
         focus_name = None
@@ -688,6 +738,15 @@ class IterativeAgent:
         central = [c for c in self.state.central_files if not c.lower().startswith("no se detecta")] if self.state.central_files else []
         summaries = self.state.semantic_summaries
         structured = self.state.project_understanding_structured
+
+        if not target.lower().startswith("readme"):
+            content = self._generate_code_artifact(target)
+            return Action(
+                kind="write",
+                description=f"Crear {target}",
+                path=target,
+                content=content,
+            )
 
         description: List[str] = []
         if is_file_scope and focus_name:
@@ -758,6 +817,79 @@ class IterativeAgent:
             path=action.path or default.path,
             content=default.content,
         )
+
+    def _infer_create_context(self, objective: str) -> tuple[bool, bool, List[str]]:
+        text = objective.lower()
+        tokens = text.replace(",", " ").split()
+        doc_tokens = {"readme", "documenta", "documentar", "documentacion", "documentación", "doc", "docs"}
+        code_tokens = {"script", "programa", "herramienta", "tool", "cli", "app", "aplicacion", "aplicación", "servicio"}
+        language_tokens = {
+            "python",
+            "py",
+            "javascript",
+            "js",
+            "node",
+            "typescript",
+            "ts",
+            "bash",
+            "shell",
+            "sh",
+            "go",
+            "rust",
+        }
+        has_doc_request = any(tok in doc_tokens for tok in tokens) or "readme" in text
+        has_code_request = any(tok in code_tokens for tok in tokens) or any(tok in language_tokens for tok in tokens)
+        has_code_ext = any(tok.endswith(ext) for tok in tokens for ext in (".py", ".js", ".ts", ".sh", ".go", ".rs"))
+        requires_code = has_code_request or has_code_ext
+        doc_requested = has_doc_request and not requires_code
+        return requires_code, doc_requested, tokens
+
+    def _infer_create_target(self, tokens: List[str], requires_code: bool, doc_requested: bool) -> str:
+        for tok in tokens:
+            if tok.endswith(".py") or tok.endswith(".js") or tok.endswith(".ts") or tok.endswith(".sh"):
+                return tok
+            if tok.endswith(".md") or tok.endswith(".txt"):
+                if not requires_code:
+                    return tok
+        if doc_requested or "readme" in tokens or "documentar" in tokens or "documentacion" in tokens or "documentación" in tokens:
+            return "README.md"
+        if "python" in tokens:
+            return "script.py"
+        if "javascript" in tokens or "node" in tokens:
+            return "script.js"
+        if "bash" in tokens or "shell" in tokens:
+            return "script.sh"
+        if requires_code:
+            return "script.py"
+        return "README.md"
+
+    def _generate_code_artifact(self, target: str) -> str:
+        payload = {
+            "objective": self.current_objective,
+            "target": target,
+            "constraints": [
+                "Generate a minimal, correct implementation",
+                "No execution, no external dependencies",
+                "Keep it short and readable",
+            ],
+        }
+        system = (
+            "Generate the full file content for the requested code artifact. "
+            "Return only code, no Markdown. Keep it minimal and aligned with the objective."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        try:
+            response = backend.call_llama(
+                self.backend.settings.base_url,
+                {"model": self.model, "messages": messages, "temperature": 0.2},
+            )
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return content.strip() + "\n" if content else f"# TODO: implement {target}\n"
+        except Exception:
+            return f"# TODO: implement {target}\n"
 
     def _ensure_semantic_synthesis(self) -> None:
         if self.state.project_understanding:
@@ -875,6 +1007,185 @@ class IterativeAgent:
             detail.append(f"Removed {len(removed)} line(s)")
         return focus + ", ".join(detail) + "."
 
+    def _request_modify_approval(self) -> bool:
+        if self.modification_approved:
+            return True
+        target = Path(self.current_targets[0]).name if self.current_targets else "unknown"
+        proposal = self.state.modification_summaries.get(self.current_targets[0], "")
+        if proposal:
+            print("Proposed changes:")
+            print(proposal)
+        approved = tools.confirm(f"Apply proposed modifications to {target}?", self.confirm_cfg)
+        self.modification_approved = approved
+        return approved
+
+    def _propose_modification(self) -> Optional[str]:
+        if not self.current_targets:
+            return None
+        target = Path(self.current_targets[0]).name
+        summary = self.state.semantic_summaries.get(target)
+        if not summary:
+            return None
+        payload = {
+            "target": target,
+            "objective": self.current_objective,
+            "semantic_summary": summary,
+            "constraints": ["No execution", "Propose changes only"],
+        }
+        system = (
+            "Generate a concise list of proposed modifications based on the objective and summary. "
+            "Do not write code. Output 2-5 bullet points in plain text, each describing what to change and why."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        try:
+            response = backend.call_llama(
+                self.backend.settings.base_url,
+                {"model": self.model, "messages": messages, "temperature": 0.2},
+            )
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return content.strip() or None
+        except Exception:
+            return None
+
+    def _apply_approved_modification(self) -> Optional[Action]:
+        if not self.current_targets:
+            return None
+        target = Path(self.current_targets[0])
+        try:
+            original = target.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        proposal = self.state.modification_summaries.get(self.current_targets[0])
+        if not proposal:
+            return None
+        for attempt in range(2):
+            patch = self._generate_patch(target.name, original, proposal)
+            if not patch:
+                continue
+            updated = self._apply_unified_diff(original, patch)
+            if not updated:
+                continue
+            if self._validate_patch(original, updated):
+                return Action(
+                    kind="write",
+                    description=f"Apply approved modifications to {target.name}",
+                    path=str(target),
+                    content=updated,
+                )
+        return None
+
+    def _generate_patch(self, filename: str, original: str, proposal: str) -> Optional[str]:
+        payload = {
+            "objective": self.current_objective,
+            "target": filename,
+            "proposal": proposal,
+            "original": original,
+            "constraints": [
+                "Apply only the approved changes",
+                "Do not add new features",
+                "Preserve all unrelated content",
+                "Return unified diff only",
+            ],
+        }
+        system = (
+            "Generate a unified diff patch for the target file. "
+            "Only include necessary hunks. Do not output explanations or extra text."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        try:
+            response = backend.call_llama(
+                self.backend.settings.base_url,
+                {"model": self.model, "messages": messages, "temperature": 0.2},
+            )
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return content.strip() or None
+        except Exception:
+            return None
+
+    def _apply_unified_diff(self, original: str, diff_text: str) -> Optional[str]:
+        if "@@" not in diff_text:
+            return None
+        orig_lines = original.splitlines(keepends=True)
+        new_lines: List[str] = []
+        orig_idx = 0
+        lines = diff_text.splitlines()
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            if line.startswith("@@"):
+                header = line
+                try:
+                    old_part = header.split(" ")[1]
+                    old_start = int(old_part.split(",")[0][1:]) - 1
+                except Exception:
+                    return None
+                if old_start < orig_idx:
+                    return None
+                new_lines.extend(orig_lines[orig_idx:old_start])
+                orig_idx = old_start
+                idx += 1
+                while idx < len(lines) and not lines[idx].startswith("@@"):
+                    hunk_line = lines[idx]
+                    if hunk_line.startswith("+"):
+                        new_lines.append(hunk_line[1:] + "\n")
+                    elif hunk_line.startswith("-"):
+                        if orig_idx >= len(orig_lines):
+                            return None
+                        if orig_lines[orig_idx].rstrip("\n") != hunk_line[1:]:
+                            return None
+                        orig_idx += 1
+                    elif hunk_line.startswith(" "):
+                        if orig_idx >= len(orig_lines):
+                            return None
+                        if orig_lines[orig_idx].rstrip("\n") != hunk_line[1:]:
+                            return None
+                        new_lines.append(orig_lines[orig_idx])
+                        orig_idx += 1
+                    idx += 1
+                continue
+            idx += 1
+        new_lines.extend(orig_lines[orig_idx:])
+        return "".join(new_lines)
+
+    def _validate_patch(self, original: str, updated: str) -> bool:
+        if not updated.strip():
+            return False
+        if original == updated:
+            return False
+        import difflib
+
+        ratio = difflib.SequenceMatcher(None, original, updated).ratio()
+        if ratio < 0.85:
+            return False
+        if "\n\n\n\n" in updated:
+            return False
+        if updated.count("#!/") > 1:
+            return False
+        return self._validate_format(updated)
+
+    def _validate_format(self, updated: str) -> bool:
+        try:
+            import ast
+
+            ast.parse(updated)
+            return True
+        except Exception:
+            pass
+        try:
+            import json as jsonlib
+
+            jsonlib.loads(updated)
+            return True
+        except Exception:
+            pass
+        return True
+
     def _explanation_intent(self, objective: str) -> str:
         text = objective.lower()
         if any(k in text for k in ["readme", "documenta", "documentar", "documentacion", "documentación"]):
@@ -901,6 +1212,11 @@ class IterativeAgent:
         if self.objective_type == "CREATE_ARTIFACT":
             if action.kind in {"read", "run"}:
                 return Action(kind="none", description="Esperando plan de escritura")
+            if action.kind == "write" and self.create_requires_code and not self.create_code_written:
+                if not action.path:
+                    return Action(kind="none", description="Esperando creación del archivo de código solicitado")
+                if not self._matches_create_target(action.path) and not self._is_code_artifact(action.path):
+                    return Action(kind="none", description="Esperando creación del archivo de código solicitado")
             return action
         if self.objective_type == "MODIFY":
             if action.kind != "write":
@@ -910,6 +1226,23 @@ class IterativeAgent:
                 if Path(action.path).name not in target_names:
                     return Action(kind="none", description="Write target does not match MODIFY target")
         return action
+
+    def _matches_create_target(self, path: str) -> bool:
+        if not self.create_primary_target:
+            return False
+        return Path(path).name == Path(self.create_primary_target).name
+
+    def _is_code_artifact(self, path: str) -> bool:
+        return Path(path).suffix.lower() in {".py", ".js", ".ts", ".tsx", ".sh", ".go", ".rs", ".rb", ".php", ".java", ".cs"}
+
+    def _has_created_code_file(self, created_files: List[str]) -> bool:
+        if not created_files:
+            return False
+        if self.create_primary_target:
+            target_name = Path(self.create_primary_target).name
+            if any(Path(path).name == target_name for path in created_files):
+                return True
+        return any(self._is_code_artifact(path) for path in created_files)
 
 
 class _NoOpEvents:
